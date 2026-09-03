@@ -140,3 +140,7 @@ with different input is rejected.
 - A permanent legacy-ledger importer, if later migrations justify its cost.
 
 Version 1 has no remote, published crate, or global installation.
+
+## License
+
+Repeto is available under the [MIT License](LICENSE).
