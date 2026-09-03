@@ -1,0 +1,43 @@
+{
+  description = "Repeto deterministic study-state engine";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = { self, nixpkgs, rust-overlay }:
+    let
+      system = "x86_64-linux";
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ (import rust-overlay) ];
+      };
+      rustToolchain = pkgs.rust-bin.stable."1.89.0".default.override {
+        extensions = [ "clippy" "rust-src" "rustfmt" ];
+      };
+      rustPlatform = pkgs.makeRustPlatform {
+        cargo = rustToolchain;
+        rustc = rustToolchain;
+      };
+    in {
+      devShells.${system}.default = pkgs.mkShell {
+        packages = [ rustToolchain pkgs.pkg-config ];
+      };
+
+      packages.${system}.default = rustPlatform.buildRustPackage {
+        pname = "repeto";
+        version = "0.1.0";
+        src = self;
+        cargoLock.lockFile = ./Cargo.lock;
+      };
+
+      apps.${system}.default = {
+        type = "app";
+        program = "${self.packages.${system}.default}/bin/repeto";
+      };
+    };
+}
