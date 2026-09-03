@@ -126,6 +126,8 @@ with different input is rejected.
 - Human-readable output.
 - On-demand reports.
 - Cached derived state with an explicit rebuild command.
+- An explicit migration path to a SQLite backend if replay, reporting, or
+  concurrent access outgrows structured files.
 - Personal FSRS parameter fitting after enough review history exists.
 
 ### Decisions that need a redesign
