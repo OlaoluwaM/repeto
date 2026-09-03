@@ -18,6 +18,9 @@
       "clean_answer_requirements": [
         "It grants read access without transferring ownership."
       ],
+      "source_notes": [
+        "Cards/Rust Borrowing.md"
+      ],
       "verified_sources": [
         "https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"
       ]

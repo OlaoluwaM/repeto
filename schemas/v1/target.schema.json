@@ -12,6 +12,7 @@
     "retrieval_demand",
     "canonical_question",
     "clean_answer_requirements",
+    "source_notes",
     "verified_sources"
   ],
   "properties": {
@@ -35,6 +36,11 @@
     "clean_answer_requirements": {
       "type": "array",
       "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "source_notes": {
+      "description": "Vault-relative Markdown paths used to recover studied scope; not factual proof.",
+      "type": "array",
       "items": { "type": "string", "minLength": 1 }
     },
     "verified_sources": {

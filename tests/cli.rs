@@ -155,6 +155,19 @@ fn commands_work_outside_the_repository_with_env_or_flag_data_paths() {
         listed["targets"].as_array().expect("targets array").len(),
         3
     );
+
+    let shown = assert_success(run(
+        data_directory.path(),
+        &["target", "show", "rust-borrow"],
+    ));
+    assert_eq!(
+        shown["definition"]["source_notes"],
+        json!(["Cards/Rust Borrowing.md"])
+    );
+    assert_eq!(
+        shown["definition"]["verified_sources"],
+        json!(["https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"])
+    );
 }
 
 #[test]

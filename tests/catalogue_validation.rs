@@ -136,6 +136,20 @@ fn rejects_filename_id_mismatch() {
 }
 
 #[test]
+fn rejects_catalogue_targets_without_the_required_source_notes_field() {
+    let mut missing_source_notes = target();
+    missing_source_notes
+        .as_object_mut()
+        .unwrap()
+        .remove("source_notes");
+
+    let error = validate_catalogue(&configuration(), &[target_file(missing_source_notes)], &[])
+        .unwrap_err();
+
+    assert_eq!(error.code, "schema_validation_error");
+}
+
+#[test]
 fn rejects_duplicate_ids_and_missing_or_cyclic_revision_links() {
     let duplicate = target();
     let error = validate_catalogue(

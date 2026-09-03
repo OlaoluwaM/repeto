@@ -42,6 +42,18 @@ fn closed_enums_are_rejected_by_the_canonical_schema() {
 }
 
 #[test]
+fn source_notes_are_required_but_may_be_empty_and_remain_distinct_from_sources() {
+    let mut target = yaml_fixture(include_str!("fixtures/valid/targets/rust-borrow.yaml"));
+    target["source_notes"] = json!([]);
+    validate_document(SchemaKind::Target, &target).unwrap();
+
+    target.as_object_mut().unwrap().remove("source_notes");
+    let error = validate_document(SchemaKind::Target, &target).unwrap_err();
+
+    assert_eq!(error.code, "schema_validation_error");
+}
+
+#[test]
 fn unsupported_schema_versions_have_a_stable_error_code() {
     let configuration = yaml_fixture(include_str!(
         "fixtures/invalid/config-unsupported-version.yaml"
