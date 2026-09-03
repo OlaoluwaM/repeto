@@ -78,7 +78,7 @@ fn review_event(sequence: u64, target_id: &str, session_id: &str) -> Value {
             "scheduling_output": {
                 "memory_state": { "stability": 1.0, "difficulty": 5.0 },
                 "interval_days": 1,
-                "retrievability": 0.9,
+                "retrievability_at_due": 0.9,
                 "due_at": "2026-09-03T12:00:00Z"
             },
             "next_due_at": "2026-09-03T12:00:00Z"
@@ -237,7 +237,7 @@ fn rejects_review_rating_and_repair_records_that_disagree_with_result() {
         "scheduling_output": {
             "memory_state": { "stability": 1.0, "difficulty": 5.0 },
             "interval_days": 1,
-            "retrievability": 0.9,
+            "retrievability_at_due": 0.9,
             "due_at": "2026-09-03T12:00:00Z"
         },
         "next_due_at": "2026-09-03T12:00:00Z"

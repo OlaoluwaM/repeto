@@ -2,6 +2,8 @@
 
 pub mod domain;
 pub mod output;
+pub mod queue;
+pub mod scheduler;
 pub mod validation;
 
 /// Returns the package version used by the command-line program.

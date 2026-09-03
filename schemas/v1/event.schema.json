@@ -120,11 +120,16 @@
     "scheduling_output": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["memory_state", "interval_days", "retrievability", "due_at"],
+      "required": ["memory_state", "interval_days", "retrievability_at_due", "due_at"],
       "properties": {
         "memory_state": { "$ref": "#/$defs/memory_state" },
         "interval_days": { "type": "integer", "minimum": 0 },
-        "retrievability": { "type": "number", "minimum": 0, "maximum": 1 },
+        "retrievability_at_due": {
+          "description": "Retrievability computed from the resulting memory state at the stored `due_at` time.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
         "due_at": { "type": "string", "format": "date-time" }
       }
     }
