@@ -293,7 +293,7 @@ fn is_calibration_mismatch(
             RepetoReviewRecordInputResult::Partial | RepetoReviewRecordInputResult::Assisted
         ) | (
             RepetoReviewRecordInputConfidence::Guessing,
-            RepetoReviewRecordInputResult::Clean
+            RepetoReviewRecordInputResult::Correct
         )
     )
 }

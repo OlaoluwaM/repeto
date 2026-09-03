@@ -50,7 +50,7 @@ fn assert_close(actual: f64, expected: f64) {
     );
 }
 
-fn clean_decision() -> (Scheduler, DateTime<Utc>, SchedulingDecision) {
+fn correct_decision() -> (Scheduler, DateTime<Utc>, SchedulingDecision) {
     let scheduler = Scheduler::from_configuration(&configuration()).unwrap();
     let reviewed_at = timestamp("2026-09-02T12:00:00Z");
     let decision = scheduler
@@ -58,7 +58,7 @@ fn clean_decision() -> (Scheduler, DateTime<Utc>, SchedulingDecision) {
             prior_memory_state: None,
             prior_reviewed_at: None,
             reviewed_at,
-            result: RepetoReviewRecordInputResult::Clean,
+            result: RepetoReviewRecordInputResult::Correct,
         })
         .unwrap();
     (scheduler, reviewed_at, decision)
@@ -79,7 +79,7 @@ fn stored_payload(decision: &SchedulingDecision) -> RepetoEventPayload {
                 "prompt": "Test prompt",
                 "cold_answer": "Test answer",
                 "confidence": "sure",
-                "result": "clean",
+                "result": "correct",
                 "grading_notes": "Test grading.",
                 "repair": {
                     "required": false,
@@ -107,9 +107,9 @@ fn payload_from_value(value: Value) -> RepetoEventPayload {
 }
 
 #[test]
-fn maps_only_clean_to_good() {
+fn maps_only_correct_to_good() {
     assert_eq!(
-        rating_for_result(RepetoReviewRecordInputResult::Clean),
+        rating_for_result(RepetoReviewRecordInputResult::Correct),
         SchedulingInputRating::Good
     );
     for result in [
@@ -173,7 +173,7 @@ fn fixed_new_and_reviewed_states_produce_fixed_decisions() {
             prior_memory_state: None,
             prior_reviewed_at: None,
             reviewed_at: first_reviewed_at,
-            result: RepetoReviewRecordInputResult::Clean,
+            result: RepetoReviewRecordInputResult::Correct,
         })
         .unwrap();
 
@@ -252,7 +252,7 @@ fn repeated_fixed_input_serializes_to_identical_json() {
 
 #[test]
 fn validates_a_stored_round_trip_from_schedule() {
-    let (scheduler, reviewed_at, decision) = clean_decision();
+    let (scheduler, reviewed_at, decision) = correct_decision();
 
     scheduler
         .validate_stored_review(reviewed_at, &stored_payload(&decision))
@@ -261,7 +261,7 @@ fn validates_a_stored_round_trip_from_schedule() {
 
 #[test]
 fn rejects_a_tampered_stored_memory_state() {
-    let (scheduler, reviewed_at, decision) = clean_decision();
+    let (scheduler, reviewed_at, decision) = correct_decision();
     let mut payload = serde_json::to_value(stored_payload(&decision)).unwrap();
     payload["scheduling_output"]["memory_state"]["stability"] = json!(9.0);
 
@@ -276,7 +276,7 @@ fn rejects_a_tampered_stored_memory_state() {
 
 #[test]
 fn rejects_a_tampered_stored_interval() {
-    let (scheduler, reviewed_at, decision) = clean_decision();
+    let (scheduler, reviewed_at, decision) = correct_decision();
     let mut payload = serde_json::to_value(stored_payload(&decision)).unwrap();
     payload["scheduling_output"]["interval_days"] = json!(99);
 
@@ -291,7 +291,7 @@ fn rejects_a_tampered_stored_interval() {
 
 #[test]
 fn rejects_a_tampered_stored_due_time() {
-    let (scheduler, reviewed_at, decision) = clean_decision();
+    let (scheduler, reviewed_at, decision) = correct_decision();
     let mut payload = serde_json::to_value(stored_payload(&decision)).unwrap();
     payload["scheduling_output"]["due_at"] = json!("2026-09-05T12:00:00Z");
 
@@ -306,7 +306,7 @@ fn rejects_a_tampered_stored_due_time() {
 
 #[test]
 fn rejects_a_tampered_stored_retrievability() {
-    let (scheduler, reviewed_at, decision) = clean_decision();
+    let (scheduler, reviewed_at, decision) = correct_decision();
     let mut payload = serde_json::to_value(stored_payload(&decision)).unwrap();
     payload["scheduling_output"]["retrievability_at_due"] = json!(0.1);
 

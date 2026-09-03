@@ -67,7 +67,7 @@ fn unsupported_schema_versions_have_a_stable_error_code() {
 #[test]
 fn review_input_rejects_a_repair_record_that_disagrees_with_the_result() {
     let mut review_input = json_fixture(include_str!("fixtures/valid/review-record-input.json"));
-    review_input["repair"]["correction"] = json!("A correction should not exist for clean.");
+    review_input["repair"]["correction"] = json!("A correction should not exist for correct.");
 
     let error = parse_review_record_input(&review_input.to_string(), false).unwrap_err();
 

@@ -200,7 +200,7 @@ fn target_show(data_directory: &Path, id: &str) -> Result<Value, CliError> {
         "definition": definition,
         "lifecycle": lifecycle_name(target.lifecycle),
         "needs_study": target.needs_study,
-        "consecutive_non_clean": target.consecutive_non_clean,
+        "consecutive_non_correct": target.consecutive_non_correct,
         "carried_from_target_id": target.carried_from_target_id,
     }))
 }

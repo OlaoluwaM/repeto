@@ -113,10 +113,10 @@ fn review_input(target_id: &str, session_id: &str, result: &str) -> Value {
         "result": result,
         "grading_notes": "The answer was graded by the review agent.",
         "repair": {
-            "required": result != "clean",
+            "required": result != "correct",
             "completed": false,
-            "correction": if result == "clean" { Value::Null } else { json!("An immutable borrow permits reads without transferring ownership.") },
-            "explanation": if result == "clean" { Value::Null } else { json!("The owner keeps ownership while the borrow exists.") },
+            "correction": if result == "correct" { Value::Null } else { json!("An immutable borrow permits reads without transferring ownership.") },
+            "explanation": if result == "correct" { Value::Null } else { json!("The owner keeps ownership while the borrow exists.") },
             "explain_back_prompt": Value::Null,
             "explain_back_answer": Value::Null,
         },
@@ -193,7 +193,7 @@ fn lifecycle_and_review_commands_emit_stable_json_and_preserve_retry_behavior() 
     let input_path = data_directory.path().join("review.json");
     fs::write(
         &input_path,
-        review_input("rust-borrow", "session-file", "clean").to_string(),
+        review_input("rust-borrow", "session-file", "correct").to_string(),
     )
     .expect("review input must write");
     let first = assert_success(run(
@@ -228,7 +228,7 @@ fn lifecycle_and_review_commands_emit_stable_json_and_preserve_retry_behavior() 
         data_directory.path(),
         &["target", "resume", "rust-borrow", "--reason", "ready again"],
     ));
-    let mut conflicting_input = review_input("rust-borrow", "session-file", "clean");
+    let mut conflicting_input = review_input("rust-borrow", "session-file", "correct");
     conflicting_input["cold_answer"] = json!("Different cold answer.");
     fs::write(&input_path, conflicting_input.to_string())
         .expect("conflicting review input must write");
@@ -321,7 +321,7 @@ fn review_record_accepts_standard_input_and_rejects_missing_data_directory() {
         .take()
         .expect("standard input must be piped")
         .write_all(
-            review_input("rust-borrow", "session-stdin", "clean")
+            review_input("rust-borrow", "session-stdin", "correct")
                 .to_string()
                 .as_bytes(),
         )
@@ -385,7 +385,7 @@ fn fresh_revision_keeps_history_empty_and_fixed_time_queue_is_byte_stable() {
 }
 
 #[test]
-fn three_non_clean_reviews_set_needs_study_without_mutating_an_untouched_target() {
+fn three_non_correct_reviews_set_needs_study_without_mutating_an_untouched_target() {
     let data_directory = data_directory();
     activate(data_directory.path(), "rust-borrow");
     let untouched_before = assert_success(run(
@@ -420,7 +420,7 @@ fn three_non_clean_reviews_set_needs_study_without_mutating_an_untouched_target(
         &["target", "show", "rust-borrow"],
     ));
     assert_eq!(reviewed["needs_study"], true);
-    assert_eq!(reviewed["consecutive_non_clean"], 3);
+    assert_eq!(reviewed["consecutive_non_correct"], 3);
     let untouched_after = assert_success(run(
         data_directory.path(),
         &["target", "history", "sql-index"],

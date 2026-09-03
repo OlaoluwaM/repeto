@@ -62,7 +62,7 @@ fn review_payload(session_id: &str, cold_answer: &str) -> Value {
             prior_memory_state: None,
             prior_reviewed_at: None,
             reviewed_at: timestamp(),
-            result: RepetoReviewRecordInputResult::Clean,
+            result: RepetoReviewRecordInputResult::Correct,
         })
         .expect("test review must schedule");
     let decision = serde_json::to_value(decision).expect("decision must serialize");
@@ -71,7 +71,7 @@ fn review_payload(session_id: &str, cold_answer: &str) -> Value {
         "prompt": "What does an immutable borrow permit in Rust?",
         "cold_answer": cold_answer,
         "confidence": "sure",
-        "result": "clean",
+        "result": "correct",
         "grading_notes": "A test review.",
         "repair": {
             "required": false,

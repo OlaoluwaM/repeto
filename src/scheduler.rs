@@ -380,7 +380,7 @@ impl Scheduler {
 #[must_use]
 pub const fn rating_for_result(result: RepetoReviewRecordInputResult) -> SchedulingInputRating {
     match result {
-        RepetoReviewRecordInputResult::Clean => SchedulingInputRating::Good,
+        RepetoReviewRecordInputResult::Correct => SchedulingInputRating::Good,
         RepetoReviewRecordInputResult::Partial
         | RepetoReviewRecordInputResult::Incorrect
         | RepetoReviewRecordInputResult::Assisted => SchedulingInputRating::Again,
@@ -389,7 +389,7 @@ pub const fn rating_for_result(result: RepetoReviewRecordInputResult) -> Schedul
 
 fn rating_for_stored_result(result: RepetoEventPayloadVariant3Result) -> SchedulingInputRating {
     match result {
-        RepetoEventPayloadVariant3Result::Clean => SchedulingInputRating::Good,
+        RepetoEventPayloadVariant3Result::Correct => SchedulingInputRating::Good,
         RepetoEventPayloadVariant3Result::Partial
         | RepetoEventPayloadVariant3Result::Incorrect
         | RepetoEventPayloadVariant3Result::Assisted => SchedulingInputRating::Again,

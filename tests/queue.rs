@@ -128,7 +128,7 @@ fn normal_order_output() -> QueueOutput {
     let low = review(
         0.5,
         RepetoReviewRecordInputConfidence::Shaky,
-        RepetoReviewRecordInputResult::Clean,
+        RepetoReviewRecordInputResult::Correct,
     );
     let confident_a = review(
         1.0,
@@ -143,7 +143,7 @@ fn normal_order_output() -> QueueOutput {
     let mismatch = review(
         1.0,
         RepetoReviewRecordInputConfidence::Guessing,
-        RepetoReviewRecordInputResult::Clean,
+        RepetoReviewRecordInputResult::Correct,
     );
     let ordinary = review(
         1.0,

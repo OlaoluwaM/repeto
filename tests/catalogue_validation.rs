@@ -56,7 +56,7 @@ fn review_event(sequence: u64, target_id: &str, session_id: &str) -> Value {
             "prompt": "What does an immutable borrow permit in Rust?",
             "cold_answer": "It permits reads without transferring ownership.",
             "confidence": "sure",
-            "result": "clean",
+            "result": "correct",
             "grading_notes": "Complete.",
             "repair": {
                 "required": false,
@@ -229,7 +229,7 @@ fn rejects_review_rating_and_repair_records_that_disagree_with_result() {
         "prompt": "What does an immutable borrow permit in Rust?",
         "cold_answer": "Reads.",
         "confidence": "sure",
-        "result": "clean",
+        "result": "correct",
         "grading_notes": "Complete.",
         "repair": {
             "required": false,

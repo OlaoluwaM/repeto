@@ -680,7 +680,7 @@ fn validate_review_payload(
         .get("result")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid_event_payload("review_completed"))?;
-    let expected_rating = if result == "clean" { "Good" } else { "Again" };
+    let expected_rating = if result == "correct" { "Good" } else { "Again" };
     if payload.get("fsrs_rating").and_then(Value::as_str) != Some(expected_rating) {
         return Err(ValidationError::new(
             "invalid_result_rating",
@@ -726,7 +726,7 @@ fn validate_repair_record(result: &str, repair: &Value) -> Result<(), Validation
     let explanation = repair.get("explanation");
     let explain_back_prompt = repair.get("explain_back_prompt");
     let explain_back_answer = repair.get("explain_back_answer");
-    let expected_repair = result != "clean";
+    let expected_repair = result != "correct";
     let has_correction = correction.and_then(Value::as_str).is_some();
     let has_explanation = explanation.and_then(Value::as_str).is_some();
     let has_explain_back_prompt = explain_back_prompt.and_then(Value::as_str).is_some();

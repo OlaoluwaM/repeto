@@ -211,8 +211,8 @@ pub struct DerivedTargetState {
     pub reviews: Vec<ReviewRecord>,
     /// Latest completed review record, if one exists.
     pub latest_review: Option<ReviewRecord>,
-    /// Number of consecutive non-clean cold attempts.
-    pub consecutive_non_clean: u32,
+    /// Number of consecutive non-correct cold attempts.
+    pub consecutive_non_correct: u32,
     /// Whether the target has reached the three-attempt needs-study threshold.
     pub needs_study: bool,
     /// Source target ID when this target explicitly carried its history.
@@ -225,7 +225,7 @@ impl Default for DerivedTargetState {
             lifecycle: LifecycleState::Draft,
             reviews: Vec::new(),
             latest_review: None,
-            consecutive_non_clean: 0,
+            consecutive_non_correct: 0,
             needs_study: false,
             carried_from_target_id: None,
         }
@@ -549,7 +549,7 @@ fn apply_revision(
     if carry_history {
         successor.reviews = previous.reviews;
         successor.latest_review = previous.latest_review;
-        successor.consecutive_non_clean = previous.consecutive_non_clean;
+        successor.consecutive_non_correct = previous.consecutive_non_correct;
         successor.needs_study = previous.needs_study;
         successor.carried_from_target_id = Some(old_target_id.to_owned());
     }
@@ -565,26 +565,29 @@ fn apply_review(
     payload: Value,
 ) -> Result<(), EventStoreError> {
     let occurred_at = event_timestamp(event)?;
-    let is_clean = payload.get("result").and_then(Value::as_str) == Some("clean");
+    let is_correct = payload.get("result").and_then(Value::as_str) == Some("correct");
     let review = ReviewRecord {
         sequence,
         occurred_at,
         payload,
     };
     let target = target_state_mut(state, target_id)?;
-    if is_clean {
-        target.consecutive_non_clean = 0;
+    if is_correct {
+        target.consecutive_non_correct = 0;
         target.needs_study = false;
     } else {
-        target.consecutive_non_clean =
-            target.consecutive_non_clean.checked_add(1).ok_or_else(|| {
-                EventStoreError::new(
-                    "review_streak_overflow",
-                    "non-clean review streak overflowed",
-                    Value::Null,
-                )
-            })?;
-        target.needs_study = target.consecutive_non_clean >= 3;
+        target.consecutive_non_correct =
+            target
+                .consecutive_non_correct
+                .checked_add(1)
+                .ok_or_else(|| {
+                    EventStoreError::new(
+                        "review_streak_overflow",
+                        "non-correct review streak overflowed",
+                        Value::Null,
+                    )
+                })?;
+        target.needs_study = target.consecutive_non_correct >= 3;
     }
     target.latest_review = Some(review.clone());
     target.reviews.push(review);

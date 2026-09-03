@@ -5,8 +5,8 @@
   "prompt": "What does an immutable borrow permit in Rust?",
   "cold_answer": "It permits reads without transferring ownership.",
   "confidence": "sure",
-  "result": "clean",
-  "grading_notes": "The answer covers the clean-answer requirement.",
+  "result": "correct",
+  "grading_notes": "The answer covers the correct-answer requirement.",
   "repair": {
     "required": false,
     "completed": false,

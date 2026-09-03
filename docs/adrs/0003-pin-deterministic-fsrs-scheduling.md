@@ -21,7 +21,7 @@ Repeto uses `fsrs-rs` version `6.6.2`, desired retention `0.90`, and no random
 interval fuzz. The configuration stores the exact scheduler version, complete
 parameter set, retention value, fuzz setting, and queue-policy version.
 
-Only a `clean` cold attempt maps to FSRS `Good`. `partial`, `incorrect`, and
+Only a `correct` cold attempt maps to FSRS `Good`. `partial`, `incorrect`, and
 `assisted` map to `Again`. Confidence is stored separately and can affect queue
 priority, but it does not change the FSRS rating or interval.
 

@@ -80,7 +80,7 @@ fn review_payload(
         })
         .expect("test review must schedule");
     let decision = serde_json::to_value(decision).expect("decision must serialize");
-    let repair = if result == "clean" {
+    let repair = if result == "correct" {
         json!({
             "required": false,
             "completed": false,
@@ -173,7 +173,7 @@ fn replay_is_deterministic_and_keeps_the_latest_stored_scheduler_result() {
             "rust-borrow",
             "review_completed",
             timestamp(),
-            review_payload("session-1", "clean", timestamp(), None),
+            review_payload("session-1", "correct", timestamp(), None),
         ),
     ];
     write_catalogue(
@@ -211,7 +211,7 @@ fn normal_revision_starts_fresh_and_explicit_carryover_retains_history() {
         let successor_at = timestamp() + Duration::days(1);
         let successor_payload = review_payload(
             "session-2",
-            "clean",
+            "correct",
             successor_at,
             carry_history.then_some((&first_payload, timestamp())),
         );
@@ -283,7 +283,7 @@ fn normal_revision_starts_fresh_and_explicit_carryover_retains_history() {
 }
 
 #[test]
-fn three_non_clean_attempts_set_needs_study_and_a_clean_attempt_resets_it() {
+fn three_non_correct_attempts_set_needs_study_and_a_correct_attempt_resets_it() {
     let temporary_directory = tempfile::tempdir().expect("temporary directory must exist");
     let target = target();
     let first_at = timestamp();
@@ -337,24 +337,24 @@ fn three_non_clean_attempts_set_needs_study_and_a_clean_attempt_resets_it() {
         std::slice::from_ref(&target),
         &events,
     );
-    let before_clean =
+    let before_correct =
         replay(&load_catalogue(temporary_directory.path()).expect("catalogue must load"))
             .expect("replay must work");
-    let state = before_clean
+    let state = before_correct
         .target("rust-borrow")
         .expect("target must exist");
-    assert_eq!(state.consecutive_non_clean, 3);
+    assert_eq!(state.consecutive_non_correct, 3);
     assert!(state.needs_study);
 
-    let mut with_clean = events.to_vec();
-    with_clean.push(event(
+    let mut with_correct = events.to_vec();
+    with_correct.push(event(
         5,
         "rust-borrow",
         "review_completed",
         third_at + Duration::days(1),
         review_payload(
             "four",
-            "clean",
+            "correct",
             third_at + Duration::days(1),
             Some((&events[3]["payload"], third_at)),
         ),
@@ -362,15 +362,15 @@ fn three_non_clean_attempts_set_needs_study_and_a_clean_attempt_resets_it() {
     write_catalogue(
         temporary_directory.path(),
         std::slice::from_ref(&target),
-        &with_clean,
+        &with_correct,
     );
-    let after_clean =
+    let after_correct =
         replay(&load_catalogue(temporary_directory.path()).expect("catalogue must load"))
             .expect("replay must work");
-    let state = after_clean
+    let state = after_correct
         .target("rust-borrow")
         .expect("target must exist");
-    assert_eq!(state.consecutive_non_clean, 0);
+    assert_eq!(state.consecutive_non_correct, 0);
     assert!(!state.needs_study);
 }
 

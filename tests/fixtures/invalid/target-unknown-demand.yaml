@@ -6,7 +6,7 @@ retrieval_demand:
   kind: memorize
   description: State the rule.
 canonical_question: What does an immutable borrow permit in Rust?
-clean_answer_requirements:
+correct_answer_requirements:
   - It grants read access without transferring ownership.
 source_notes: []
 verified_sources:
