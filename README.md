@@ -129,6 +129,12 @@ with different input is rejected.
 - An explicit migration path to a SQLite backend if replay, reporting, or
   concurrent access outgrows structured files.
 - Personal FSRS parameter fitting after enough review history exists.
+- Optional use of all four FSRS ratings (`Again`, `Hard`, `Good`, and `Easy`)
+  if Repeto can derive recall effort through a deterministic, validated rule.
+  Version 1 uses only `Again` and `Good`.
+- A separate, versioned target-relations graph for prerequisites or connection
+  prompts if a concrete workflow needs it. Relations should remain outside the
+  nearly immutable target definitions.
 
 ### Decisions that need a redesign
 
