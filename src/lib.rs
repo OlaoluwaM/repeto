@@ -1,6 +1,7 @@
 //! Repeto study-state engine.
 
 pub mod domain;
+pub mod events;
 pub mod output;
 pub mod queue;
 pub mod scheduler;
