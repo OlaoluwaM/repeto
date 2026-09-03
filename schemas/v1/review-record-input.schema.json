@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:repeto:schema:v1:review-record-input",
+  "title": "RepetoReviewRecordInput",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "target_id", "session_id", "prompt", "cold_answer", "confidence", "result", "grading_notes", "repair"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "target_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "prompt": { "type": "string", "minLength": 1 },
+    "cold_answer": { "type": "string", "minLength": 1 },
+    "confidence": { "type": "string", "enum": ["sure", "shaky", "guessing"] },
+    "result": { "type": "string", "enum": ["clean", "partial", "incorrect", "assisted"] },
+    "grading_notes": { "type": "string", "minLength": 1 },
+    "repair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "completed",
+        "correction",
+        "explanation",
+        "explain_back_prompt",
+        "explain_back_answer"
+      ],
+      "properties": {
+        "required": { "type": "boolean" },
+        "completed": { "type": "boolean" },
+        "correction": { "type": ["string", "null"], "minLength": 1 },
+        "explanation": { "type": ["string", "null"], "minLength": 1 },
+        "explain_back_prompt": { "type": ["string", "null"], "minLength": 1 },
+        "explain_back_answer": { "type": ["string", "null"], "minLength": 1 }
+      }
+    }
+  }
+}

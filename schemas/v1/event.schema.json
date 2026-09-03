@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:repeto:schema:v1:event",
+  "title": "RepetoEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "sequence", "event_type", "occurred_at", "target_id", "payload"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "event_type": {
+      "type": "string",
+      "enum": ["activation", "pause", "resume", "retirement", "revision", "review_completed"]
+    },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "target_id": { "type": "string", "minLength": 1 },
+    "payload": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["definition"],
+          "properties": { "definition": { "$ref": "urn:repeto:schema:v1:target" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reason"],
+          "properties": { "reason": { "type": "string", "minLength": 1 } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["new_target_id", "reason", "carry_history", "definition"],
+          "properties": {
+            "new_target_id": { "type": "string", "minLength": 1 },
+            "reason": { "type": "string", "minLength": 1 },
+            "carry_history": { "type": "boolean" },
+            "definition": { "$ref": "urn:repeto:schema:v1:target" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_id",
+            "prompt",
+            "cold_answer",
+            "confidence",
+            "result",
+            "grading_notes",
+            "repair",
+            "fsrs_rating",
+            "scheduler_version",
+            "parameter_set",
+            "scheduling_input",
+            "scheduling_output",
+            "next_due_at"
+          ],
+          "properties": {
+            "session_id": { "type": "string", "minLength": 1 },
+            "prompt": { "type": "string", "minLength": 1 },
+            "cold_answer": { "type": "string", "minLength": 1 },
+            "confidence": { "type": "string", "enum": ["sure", "shaky", "guessing"] },
+            "result": { "type": "string", "enum": ["clean", "partial", "incorrect", "assisted"] },
+            "grading_notes": { "type": "string", "minLength": 1 },
+            "repair": { "$ref": "#/$defs/repair_record" },
+            "fsrs_rating": { "type": "string", "enum": ["Again", "Good"] },
+            "scheduler_version": { "type": "string", "minLength": 1 },
+            "parameter_set": { "type": "array", "minItems": 1, "items": { "type": "number" } },
+            "scheduling_input": { "$ref": "#/$defs/scheduling_input" },
+            "scheduling_output": { "$ref": "#/$defs/scheduling_output" },
+            "next_due_at": { "type": "string", "format": "date-time" }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "memory_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stability", "difficulty"],
+      "properties": {
+        "stability": { "type": "number", "minimum": 0 },
+        "difficulty": { "type": "number", "minimum": 0 }
+      }
+    },
+    "repair_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "completed",
+        "correction",
+        "explanation",
+        "explain_back_prompt",
+        "explain_back_answer"
+      ],
+      "properties": {
+        "required": { "type": "boolean" },
+        "completed": { "type": "boolean" },
+        "correction": { "type": ["string", "null"], "minLength": 1 },
+        "explanation": { "type": ["string", "null"], "minLength": 1 },
+        "explain_back_prompt": { "type": ["string", "null"], "minLength": 1 },
+        "explain_back_answer": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "scheduling_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prior_memory_state", "elapsed_days", "rating", "desired_retention"],
+      "properties": {
+        "prior_memory_state": { "anyOf": [{ "$ref": "#/$defs/memory_state" }, { "type": "null" }] },
+        "elapsed_days": { "type": "number", "minimum": 0 },
+        "rating": { "type": "string", "enum": ["Again", "Good"] },
+        "desired_retention": { "type": "number", "const": 0.9 }
+      }
+    },
+    "scheduling_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["memory_state", "interval_days", "retrievability", "due_at"],
+      "properties": {
+        "memory_state": { "$ref": "#/$defs/memory_state" },
+        "interval_days": { "type": "integer", "minimum": 0 },
+        "retrievability": { "type": "number", "minimum": 0, "maximum": 1 },
+        "due_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

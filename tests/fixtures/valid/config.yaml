@@ -1,0 +1,11 @@
+schema_version: 1
+desired_retention: 0.9
+scheduler:
+  implementation: fsrs-rs
+  version: 6.6.2
+  parameters:
+    - 0.4
+    - 0.6
+fuzz_enabled: false
+default_recommended_target_count: 3
+queue_priority_policy_version: 1

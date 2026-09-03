@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "sequence": 1,
+  "event_type": "activation",
+  "occurred_at": "2026-09-02T12:00:00Z",
+  "target_id": "rust-borrow",
+  "payload": {
+    "definition": {
+      "schema_version": 1,
+      "id": "rust-borrow",
+      "topic": "Rust",
+      "scope": "Explain borrowing for an immutable reference.",
+      "retrieval_demand": {
+        "kind": "explain",
+        "description": "Explain the ownership rule and its practical effect."
+      },
+      "canonical_question": "What does an immutable borrow permit in Rust?",
+      "clean_answer_requirements": [
+        "It grants read access without transferring ownership."
+      ],
+      "verified_sources": [
+        "https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"
+      ]
+    }
+  }
+}

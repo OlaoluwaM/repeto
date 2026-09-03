@@ -14,8 +14,18 @@ name = "repeto"
 path = "src/main.rs"
 
 [dependencies]
+chrono = { version = "0.4.42", features = ["serde"] }
+jsonschema = "0.30.0"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+serde_yaml = { package = "serde_yaml_ng", version = "0.10.0" }
+
+[build-dependencies]
+serde_json = "1.0.140"
+typify = "0.6.2"
 
 [dev-dependencies]
+tempfile = "3.19.1"
 
 [lints.rust]
 unsafe_code = "forbid"
