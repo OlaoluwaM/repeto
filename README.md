@@ -8,6 +8,7 @@ The design and workflow live in the agent-context hub:
 
 - [Study System](../../agent-context/Protocols/Study%20System/README.md)
 - [Study System Terms](../../agent-context/Protocols/Study%20System/Terms.md)
+- [Assessment Policy](../../agent-context/Protocols/Study%20System/Assessment%20Policy.md)
 - [Implementation Plan](../../agent-context/Protocols/Study%20System/Implementation%20Plan.md)
 
 Those documents are the source of truth for study terms. This repository does
