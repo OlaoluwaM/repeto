@@ -420,18 +420,67 @@ pub fn write_event_with_failure_point(
     failure_point: FailurePoint,
 ) -> Result<WriteOutcome, EventStoreError> {
     let _lock = DataDirectoryLock::acquire(data_directory)?;
+    let locked = load_locked_state(data_directory)?;
+    append_locked(locked, data_directory, request, failure_point)
+}
+
+/// Builds and commits one event while holding the study-data lock.
+///
+/// The builder observes the catalogue and replayed state from the same locked
+/// transaction that validates and appends its returned request.
+///
+/// # Errors
+///
+/// Returns either a builder error or a converted event-store error.
+pub fn write_event_with_locked_replay<F, E>(
+    data_directory: &Path,
+    build: F,
+) -> Result<WriteOutcome, E>
+where
+    F: FnOnce(&Catalogue, &DerivedStudyState) -> Result<EventRequest, E>,
+    E: From<EventStoreError>,
+{
+    let _lock = DataDirectoryLock::acquire(data_directory).map_err(E::from)?;
+    let locked = load_locked_state(data_directory).map_err(E::from)?;
+    let request = build(&locked.catalogue, &locked.derived)?;
+    append_locked(locked, data_directory, &request, FailurePoint::None).map_err(E::from)
+}
+
+struct LockedStudyState {
+    catalogue: Catalogue,
+    derived: DerivedStudyState,
+    scheduler: Scheduler,
+    existing_bytes: Vec<u8>,
+    raw_events: Vec<Value>,
+}
+
+fn load_locked_state(data_directory: &Path) -> Result<LockedStudyState, EventStoreError> {
     let catalogue = load_catalogue(data_directory).map_err(EventStoreError::from)?;
     let derived = replay(&catalogue)?;
     let scheduler =
         Scheduler::from_configuration(&catalogue.configuration).map_err(scheduler_error)?;
     let existing_bytes = read_event_bytes(data_directory)?;
     let raw_events = parse_event_lines(&existing_bytes)?;
+    Ok(LockedStudyState {
+        catalogue,
+        derived,
+        scheduler,
+        existing_bytes,
+        raw_events,
+    })
+}
 
-    if let Some(outcome) = retry_or_noop(&derived, &raw_events, request)? {
+fn append_locked(
+    locked: LockedStudyState,
+    data_directory: &Path,
+    request: &EventRequest,
+    failure_point: FailurePoint,
+) -> Result<WriteOutcome, EventStoreError> {
+    if let Some(outcome) = retry_or_noop(&locked.derived, &locked.raw_events, request)? {
         return Ok(outcome);
     }
 
-    let sequence = derived.last_sequence.checked_add(1).ok_or_else(|| {
+    let sequence = locked.derived.last_sequence.checked_add(1).ok_or_else(|| {
         EventStoreError::new(
             "event_sequence_overflow",
             "event sequence number overflowed",
@@ -439,16 +488,16 @@ pub fn write_event_with_failure_point(
         )
     })?;
     let candidate = request.as_value(sequence);
-    validate_candidate(&catalogue, &raw_events, &candidate)?;
+    validate_candidate(&locked.catalogue, &locked.raw_events, &candidate)?;
     if candidate.get("event_type").and_then(Value::as_str) == Some("review_completed") {
-        validate_stored_review_value(&scheduler, &derived, &candidate)?;
+        validate_stored_review_value(&locked.scheduler, &locked.derived, &candidate)?;
     }
 
     let candidate_line =
         serde_json::to_vec(&candidate).map_err(|error| serialization_error(&error))?;
     let committed_event =
         serde_json::from_slice(&candidate_line).map_err(|error| serialization_error(&error))?;
-    let replacement = append_event_bytes(existing_bytes, &candidate_line);
+    let replacement = append_event_bytes(locked.existing_bytes, &candidate_line);
     replace_events_file(data_directory, &replacement, failure_point)?;
 
     Ok(WriteOutcome {

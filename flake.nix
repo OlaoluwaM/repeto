@@ -31,13 +31,33 @@
       packages.${system}.default = rustPlatform.buildRustPackage {
         pname = "repeto";
         version = "0.1.0";
-        src = self;
+        src = ./.;
         cargoLock.lockFile = ./Cargo.lock;
+        meta = {
+          description = "Repeto deterministic study-state engine";
+          mainProgram = "repeto";
+        };
       };
 
       apps.${system}.default = {
         type = "app";
         program = "${self.packages.${system}.default}/bin/repeto";
+        meta.description = "Repeto deterministic study-state engine";
+      };
+
+      checks.${system}.quality = rustPlatform.buildRustPackage {
+        pname = "repeto-quality";
+        version = "0.1.0";
+        src = ./.;
+        cargoLock.lockFile = ./Cargo.lock;
+        doCheck = true;
+        checkPhase = ''
+          runHook preCheck
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features --locked -- -D warnings
+          cargo test --all-targets --all-features --locked
+          runHook postCheck
+        '';
       };
     };
 }

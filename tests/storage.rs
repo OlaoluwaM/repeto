@@ -1,7 +1,7 @@
 use std::{
     fs,
     path::Path,
-    sync::{Arc, Barrier},
+    sync::{Arc, Barrier, Mutex},
     thread,
 };
 
@@ -9,8 +9,8 @@ use chrono::{DateTime, Utc};
 use repeto::{
     domain::{RepetoConfiguration, generated::RepetoReviewRecordInputResult},
     events::{
-        EventRequest, EventRequestKind, FailurePoint, WriteDisposition, write_event,
-        write_event_with_failure_point,
+        EventRequest, EventRequestKind, EventStoreError, FailurePoint, WriteDisposition,
+        write_event, write_event_with_failure_point, write_event_with_locked_replay,
     },
     scheduler::{ScheduleRequest, Scheduler},
     validation::{SchemaKind, parse_document, parse_yaml},
@@ -261,6 +261,59 @@ fn concurrent_writers_receive_continuous_unique_sequences() {
     assert_eq!(events.len(), 2);
     assert_eq!(events[0]["sequence"], 1);
     assert_eq!(events[1]["sequence"], 2);
+}
+
+#[test]
+fn locked_builders_observe_distinct_replay_sequences_before_they_append() {
+    let temporary_directory = tempfile::tempdir().expect("temporary directory must exist");
+    write_catalogue(temporary_directory.path(), &[target("one"), target("two")]);
+    let barrier = Arc::new(Barrier::new(2));
+    let observed_sequences = Arc::new(Mutex::new(Vec::new()));
+    thread::scope(|scope| {
+        for target_id in ["one", "two"] {
+            let barrier = Arc::clone(&barrier);
+            let observed_sequences = Arc::clone(&observed_sequences);
+            let data_directory = temporary_directory.path();
+            scope.spawn(move || {
+                barrier.wait();
+                let result: Result<_, EventStoreError> =
+                    write_event_with_locked_replay(data_directory, |catalogue, derived| {
+                        observed_sequences
+                            .lock()
+                            .expect("test observation lock must be available")
+                            .push(derived.last_sequence);
+                        let definition = serde_json::to_value(
+                            catalogue.targets.get(target_id).expect("target must exist"),
+                        )
+                        .expect("target definition must serialize");
+                        Ok(EventRequest::new(
+                            target_id,
+                            timestamp(),
+                            EventRequestKind::Activation { definition },
+                        ))
+                    });
+                result.expect("locked builder activation must commit");
+            });
+        }
+    });
+
+    let mut observed = observed_sequences
+        .lock()
+        .expect("test observation lock must be available")
+        .clone();
+    observed.sort_unstable();
+    assert_eq!(observed, vec![0, 1]);
+    let stored_sequences = fs::read_to_string(temporary_directory.path().join("events.jsonl"))
+        .expect("event history must read")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("event line must be JSON"))
+        .map(|event| {
+            event["sequence"]
+                .as_u64()
+                .expect("sequence must be an integer")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(stored_sequences, vec![1, 2]);
 }
 
 #[test]
