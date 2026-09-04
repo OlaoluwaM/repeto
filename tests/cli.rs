@@ -543,6 +543,80 @@ fn check_aggregates_all_stale_sources_while_structural_and_repair_paths_remain_a
 }
 
 #[test]
+fn check_aggregates_retired_syntax_and_non_retired_file_failures() {
+    let data = setup();
+    add_retired_target(data.path());
+    activate(data.path());
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "activate",
+            "retired",
+            "--at",
+            "2026-09-03T12:00:00.000Z",
+        ],
+    );
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "retire",
+            "retired",
+            "--reason",
+            "Retire the syntax fixture.",
+            "--at",
+            "2026-09-03T12:01:00.000Z",
+        ],
+    );
+
+    let retired_path = data.path().join("targets/retired.yaml");
+    let mut retired: Value =
+        serde_yaml::from_str(&fs::read_to_string(&retired_path).expect("retired target"))
+            .expect("retired target YAML");
+    retired["source_notes"] = json!(["../outside.md"]);
+    fs::write(
+        &retired_path,
+        serde_yaml::to_string(&retired).expect("retired target YAML"),
+    )
+    .expect("retired target");
+
+    let event_path = data.path().join("events.jsonl");
+    let mut events = fs::read_to_string(&event_path)
+        .expect("event history")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("event"))
+        .collect::<Vec<_>>();
+    events[1]["payload"]["definition"] = retired;
+    let event_bytes = events
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(event_path, event_bytes).expect("event history");
+    fs::remove_file(data.path().join("notes/Cards/note.md")).expect("missing active source");
+
+    let (success, output) = command(data.path(), &["check"]);
+    assert!(!success, "{output}");
+    assert_eq!(output["error"]["code"], "invalid_source_note_path");
+    let failures = output["error"]["details"]["failures"]
+        .as_array()
+        .expect("failure list");
+    assert_eq!(failures.len(), 2);
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure["reason"] == "invalid_relative_markdown_path")
+    );
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure["reason"] == "not_found")
+    );
+}
+
+#[test]
 fn review_streak_and_carried_history_are_replayed_and_duplicate_sessions_reject() {
     let data = setup();
     add_successor(data.path());

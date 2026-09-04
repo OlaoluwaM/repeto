@@ -336,6 +336,28 @@ pub fn parse_document<T: DeserializeOwned>(
 ///
 /// Returns a stable error when a document cannot be read, parsed, or validated.
 pub fn load_catalogue(data_directory: &Path) -> Result<Catalogue, ValidationError> {
+    load_catalogue_with_source_syntax(data_directory, true)
+}
+
+/// Loads a catalogue while deferring source-path syntax errors to preflight.
+///
+/// All other structural validation still runs. This lets `repeto check` derive
+/// lifecycle first, then aggregate malformed historical paths with external
+/// file failures for non-retired targets.
+///
+/// # Errors
+///
+/// Returns a stable error when any non-source-path document rule fails.
+pub fn load_catalogue_for_source_preflight(
+    data_directory: &Path,
+) -> Result<Catalogue, ValidationError> {
+    load_catalogue_with_source_syntax(data_directory, false)
+}
+
+fn load_catalogue_with_source_syntax(
+    data_directory: &Path,
+    validate_source_syntax: bool,
+) -> Result<Catalogue, ValidationError> {
     let configuration_value = load_yaml_file(&data_directory.join("config.yaml"))?;
 
     let target_directory = data_directory.join("targets");
@@ -365,7 +387,11 @@ pub fn load_catalogue(data_directory: &Path) -> Result<Catalogue, ValidationErro
     }
 
     let events = load_events(&data_directory.join("events.jsonl"))?;
-    validate_catalogue(&configuration_value, &target_files, &events)?;
+    if validate_source_syntax {
+        validate_catalogue(&configuration_value, &target_files, &events)?;
+    } else {
+        validate_catalogue_without_source_syntax(&configuration_value, &target_files, &events)?;
+    }
 
     let configuration = parse_document(SchemaKind::Configuration, configuration_value)?;
     let mut targets = BTreeMap::new();
@@ -414,6 +440,15 @@ pub fn validate_catalogue(
     target_files: &[TargetFile],
     events: &[Value],
 ) -> Result<(), ValidationError> {
+    validate_catalogue_without_source_syntax(configuration, target_files, events)?;
+    validate_source_note_path_syntax(target_files)
+}
+
+fn validate_catalogue_without_source_syntax(
+    configuration: &Value,
+    target_files: &[TargetFile],
+    events: &[Value],
+) -> Result<(), ValidationError> {
     validate_document(SchemaKind::Configuration, configuration)?;
 
     let mut targets = BTreeMap::new();
@@ -430,7 +465,6 @@ pub fn validate_catalogue(
         }
     }
 
-    validate_source_note_path_syntax(target_files)?;
     validate_revision_graph(&targets)?;
     validate_events(events, &targets)
 }
@@ -524,6 +558,29 @@ pub fn validate_source_note_paths(
     configuration: &Value,
     target_files: &[TargetFile],
 ) -> Result<(), ValidationError> {
+    validate_source_note_paths_impl(configuration, target_files, None)
+}
+
+/// Validates path syntax for every supplied target and external files only for
+/// the selected target IDs.
+///
+/// # Errors
+///
+/// Returns the same complete, sorted source-path failure list as
+/// [`validate_source_note_paths`].
+pub fn validate_source_note_paths_for_ids(
+    configuration: &Value,
+    target_files: &[TargetFile],
+    external_file_target_ids: &BTreeSet<String>,
+) -> Result<(), ValidationError> {
+    validate_source_note_paths_impl(configuration, target_files, Some(external_file_target_ids))
+}
+
+fn validate_source_note_paths_impl(
+    configuration: &Value,
+    target_files: &[TargetFile],
+    external_file_target_ids: Option<&BTreeSet<String>>,
+) -> Result<(), ValidationError> {
     validate_document(SchemaKind::Configuration, configuration)?;
     for target_file in target_files {
         validate_document(SchemaKind::Target, &target_file.document)?;
@@ -546,7 +603,14 @@ pub fn validate_source_note_paths(
             let stored_path = source_note.as_str().ok_or_else(|| {
                 assessment_error("target source_notes must contain strings", Value::Null)
             })?;
-            if let Err(reason) = validate_one_source_note(&canonical_root, stored_path) {
+            let reason = if !is_vault_relative_markdown_path(stored_path) {
+                Some("invalid_relative_markdown_path")
+            } else if external_file_target_ids.is_none_or(|ids| ids.contains(&target_id)) {
+                validate_one_source_note(&canonical_root, stored_path).err()
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
                 failures.push(json!({
                     "target_id": target_id,
                     "stored_path": stored_path,

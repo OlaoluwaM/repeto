@@ -16,8 +16,9 @@ use repeto::{
     queue::{QueueRequest, QueueTarget, build_queue},
     scheduler::{LatestReview, ScheduleRequest, Scheduler},
     validation::{
-        Catalogue, TargetFile, load_catalogue, parse_json, parse_review_record_input, parse_yaml,
-        validate_review_input_for_target, validate_source_note_paths,
+        Catalogue, TargetFile, load_catalogue, load_catalogue_for_source_preflight, parse_json,
+        parse_review_record_input, parse_yaml, validate_review_input_for_target,
+        validate_source_note_paths, validate_source_note_paths_for_ids,
     },
 };
 use repeto_assessment::{Assessment, AssessmentResult, POLICY_ID, derive_result};
@@ -48,18 +49,9 @@ pub fn execute(command: Command, data_directory: &Path) -> Result<Value, CliErro
 }
 
 fn check(data_directory: &Path) -> Result<Value, CliError> {
-    let catalogue = load(data_directory)?;
+    let catalogue = load_catalogue_for_source_preflight(data_directory).map_err(CliError::from)?;
     let state = replay_catalogue(&catalogue)?;
-    validate_sources(
-        &catalogue,
-        catalogue.targets.keys().filter_map(|id| {
-            (state
-                .target(id)
-                .map_or(LifecycleState::Draft, |target| target.lifecycle)
-                != LifecycleState::Retired)
-                .then_some(id.as_str())
-        }),
-    )?;
+    validate_preflight_sources(&catalogue, &state)?;
     Ok(json!({
         "data_directory": data_directory,
         "target_count": catalogue.targets.len(),
@@ -607,8 +599,36 @@ fn validate_sources<'a>(
     ids: impl IntoIterator<Item = &'a str>,
 ) -> Result<(), CliError> {
     let configuration = serialize(&catalogue.configuration)?;
-    let targets = ids
-        .into_iter()
+    let targets = source_target_files(catalogue, ids)?;
+    validate_source_note_paths(&configuration, &targets).map_err(CliError::from)
+}
+
+fn validate_preflight_sources(
+    catalogue: &Catalogue,
+    state: &DerivedStudyState,
+) -> Result<(), CliError> {
+    let configuration = serialize(&catalogue.configuration)?;
+    let targets = source_target_files(catalogue, catalogue.targets.keys().map(String::as_str))?;
+    let external_file_target_ids = catalogue
+        .targets
+        .keys()
+        .filter(|id| {
+            state
+                .target(id.as_str())
+                .map_or(LifecycleState::Draft, |target| target.lifecycle)
+                != LifecycleState::Retired
+        })
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    validate_source_note_paths_for_ids(&configuration, &targets, &external_file_target_ids)
+        .map_err(CliError::from)
+}
+
+fn source_target_files<'a>(
+    catalogue: &Catalogue,
+    ids: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<TargetFile>, CliError> {
+    ids.into_iter()
         .map(|id| {
             catalogue
                 .targets
@@ -621,8 +641,7 @@ fn validate_sources<'a>(
                     })
                 })
         })
-        .collect::<Result<Vec<_>, CliError>>()?;
-    validate_source_note_paths(&configuration, &targets).map_err(CliError::from)
+        .collect()
 }
 
 fn replay_catalogue(catalogue: &Catalogue) -> Result<DerivedStudyState, CliError> {
