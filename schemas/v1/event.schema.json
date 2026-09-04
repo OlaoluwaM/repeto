@@ -214,7 +214,11 @@
         "prior_memory_state": { "anyOf": [{ "$ref": "#/$defs/MemoryState" }, { "type": "null" }] },
         "elapsed_days": { "type": "integer", "minimum": 0 },
         "rating": { "type": "string", "enum": ["Again", "Good"] },
-        "desired_retention": { "type": "number", "const": 0.9 }
+        "desired_retention": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1
+        }
       }
     },
     "SchedulingOutput": {

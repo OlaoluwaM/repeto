@@ -21,10 +21,13 @@ fn valid_fixtures_validate_and_deserialize_into_generated_types() {
     let configuration = yaml_fixture(include_str!("fixtures/valid/config.yaml"));
     let target = yaml_fixture(include_str!("fixtures/valid/targets/rust-borrow.yaml"));
     let event = json_fixture(include_str!("fixtures/valid/event.json"));
+    let completed_review_event =
+        json_fixture(include_str!("fixtures/valid/review-completed-event.json"));
 
     let _: RepetoConfiguration = parse_document(SchemaKind::Configuration, configuration).unwrap();
     let _: RepetoTargetDefinition = parse_document(SchemaKind::Target, target).unwrap();
     let _: RepetoEvent = parse_document(SchemaKind::Event, event).unwrap();
+    let _: RepetoEvent = parse_document(SchemaKind::Event, completed_review_event).unwrap();
     let _: RepetoReviewRecordInput = parse_review_record_input(
         include_str!("fixtures/valid/review-record-input.json"),
         false,
@@ -121,44 +124,8 @@ fn review_input_rejects_caller_supplied_result_and_schedule_fields() {
 }
 
 #[test]
-fn completed_review_events_store_scheduling_only_under_one_closed_object() {
-    let mut event = json_fixture(include_str!("fixtures/valid/event.json"));
-    event["event_type"] = json!("review_completed");
-    event["payload"] = json!({
-        "session_id": "session-1",
-        "assessment": {
-            "answer_submitted": false,
-            "target_knowledge_supplied_before_answer": false,
-            "requirement_checks": { "read-access": false }
-        },
-        "metadata": {
-            "prompt": "What does an immutable borrow permit in Rust?",
-            "grading_explanation": "No answer was submitted.",
-            "verification_sources": ["https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"]
-        },
-        "assessment_policy_id": "repeto-analytic-conjunctive-v1",
-        "result": "not_correct",
-        "scheduling": {
-            "scheduler": {
-                "implementation": "fsrs-rs",
-                "version": "6.6.2",
-                "fuzz_enabled": false,
-                "parameters": vec![0.0; 21]
-            },
-            "input": {
-                "prior_memory_state": null,
-                "elapsed_days": 0,
-                "rating": "Again",
-                "desired_retention": 0.9
-            },
-            "output": {
-                "memory_state": { "stability": 1.0, "difficulty": 5.0 },
-                "interval_days": 1,
-                "retrievability_at_due": 0.9,
-                "due_at": "2026-09-03T12:00:00.000Z"
-            }
-        }
-    });
+fn canonical_completed_review_event_validates_and_has_one_closed_scheduling_object() {
+    let mut event = json_fixture(include_str!("fixtures/valid/review-completed-event.json"));
     validate_document(SchemaKind::Event, &event).unwrap();
 
     event["payload"]["next_due_at"] = json!("2026-09-03T12:00:00.000Z");

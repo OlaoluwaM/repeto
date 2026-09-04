@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "sequence": 21,
+  "event_type": "review_completed",
+  "occurred_at": "2026-09-02T12:00:00.000Z",
+  "target_id": "composite-index-prefix.r1",
+  "payload": {
+    "session_id": "daily-review-20260902T115900.000Z",
+    "assessment": {
+      "answer_submitted": true,
+      "target_knowledge_supplied_before_answer": false,
+      "requirement_checks": {
+        "leading-key": true,
+        "tree-navigation": true
+      }
+    },
+    "confidence": "shaky",
+    "metadata": {
+      "prompt": "Why does supplying country allow this index seek?",
+      "answer": "Country is the leading key, so it directs navigation to the matching leaf range.",
+      "grading_explanation": "The answer identified the leading key and its navigation role.",
+      "verification_sources": [
+        "https://www.postgresql.org/docs/current/indexes-multicolumn.html"
+      ]
+    },
+    "assessment_policy_id": "repeto-analytic-conjunctive-v1",
+    "result": "correct",
+    "scheduling": {
+      "scheduler": {
+        "implementation": "fsrs-rs",
+        "version": "6.6.2",
+        "fuzz_enabled": false,
+        "parameters": [
+          0.21199999749660492,
+          1.2930999994277954,
+          2.30649995803833,
+          8.295599937438965,
+          6.413300037384033,
+          0.8334000110626221,
+          3.019399881362915,
+          0.0010000000474974513,
+          1.8722000122070312,
+          0.16660000383853912,
+          0.7960000038146973,
+          1.4835000038146973,
+          0.061400000005960464,
+          0.2628999948501587,
+          1.648300051689148,
+          0.6014000177383423,
+          1.8729000091552734,
+          0.5425000190734863,
+          0.09120000153779984,
+          0.0658000037074089,
+          0.1542000025510788
+        ]
+      },
+      "input": {
+        "prior_memory_state": null,
+        "elapsed_days": 0,
+        "rating": "Good",
+        "desired_retention": 0.8999999761581421
+      },
+      "output": {
+        "memory_state": {
+          "stability": 2.30649995803833,
+          "difficulty": 2.1181039810180664
+        },
+        "interval_days": 2,
+        "retrievability_at_due": 0.9094932079315186,
+        "due_at": "2026-09-04T12:00:00.000Z"
+      }
+    }
+  }
+}

@@ -78,7 +78,7 @@ fn review_event(sequence: u64, target_id: &str, session_id: &str) -> Value {
                     "prior_memory_state": null,
                     "elapsed_days": 0,
                     "rating": "Good",
-                    "desired_retention": 0.9
+                    "desired_retention": 0.8999999761581421
                 },
                 "output": {
                     "memory_state": { "stability": 1.0, "difficulty": 5.0 },
