@@ -212,8 +212,8 @@ fn source_note_paths_report_every_failure_in_deterministic_order() {
 fn structural_catalogue_validation_does_not_read_source_note_paths() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let root = temporary_directory.path().join("missing-vault");
-    let target_file = target_file(target());
-    validate_catalogue(&configuration(root.to_str().unwrap()), &[target_file], &[]).unwrap();
+    let target_entry = target_file(target());
+    validate_catalogue(&configuration(root.to_str().unwrap()), &[target_entry], &[]).unwrap();
     let error = validate_source_note_paths(
         &configuration(root.to_str().unwrap()),
         &[target_file(target())],
