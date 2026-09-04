@@ -50,7 +50,16 @@ pub fn execute(command: Command, data_directory: &Path) -> Result<Value, CliErro
 fn check(data_directory: &Path) -> Result<Value, CliError> {
     let catalogue = load(data_directory)?;
     let state = replay_catalogue(&catalogue)?;
-    validate_sources(&catalogue, catalogue.targets.keys().map(String::as_str))?;
+    validate_sources(
+        &catalogue,
+        catalogue.targets.keys().filter_map(|id| {
+            (state
+                .target(id)
+                .map_or(LifecycleState::Draft, |target| target.lifecycle)
+                != LifecycleState::Retired)
+                .then_some(id.as_str())
+        }),
+    )?;
     Ok(json!({
         "data_directory": data_directory,
         "target_count": catalogue.targets.len(),

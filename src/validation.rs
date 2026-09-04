@@ -984,7 +984,7 @@ fn validate_event_definition(
     let target = targets
         .get(target_id)
         .ok_or_else(|| invalid_event_payload("definition"))?;
-    if definition == *target {
+    if canonical_target_definition(definition) == canonical_target_definition(target) {
         Ok(())
     } else {
         Err(ValidationError::new(
@@ -993,6 +993,16 @@ fn validate_event_definition(
             json!({ "target_id": target_id }),
         ))
     }
+}
+
+fn canonical_target_definition(definition: &Value) -> Value {
+    let mut definition = definition.clone();
+    for field in ["source_notes", "origin_references"] {
+        if let Some(values) = definition.get_mut(field).and_then(Value::as_array_mut) {
+            values.sort_by_key(Value::to_string);
+        }
+    }
+    definition
 }
 
 fn validate_review_payload(

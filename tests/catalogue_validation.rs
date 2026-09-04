@@ -102,6 +102,24 @@ fn valid_catalogue_with_activation_passes() {
 }
 
 #[test]
+fn target_snapshot_comparison_treats_schema_sets_as_unordered() {
+    let mut catalogue_target = target();
+    catalogue_target["source_notes"] = json!(["Cards/z.md", "Cards/a.md"]);
+    catalogue_target["origin_references"] = json!(["z", "a"]);
+    let mut activation = activation_event();
+    activation["payload"]["definition"] = catalogue_target.clone();
+    activation["payload"]["definition"]["source_notes"] = json!(["Cards/a.md", "Cards/z.md"]);
+    activation["payload"]["definition"]["origin_references"] = json!(["a", "z"]);
+
+    validate_catalogue(
+        &configuration(),
+        &[target_file(catalogue_target)],
+        &[activation],
+    )
+    .expect("set order does not change an immutable target definition");
+}
+
+#[test]
 fn loads_yaml_and_jsonl_catalogue_from_deterministic_paths() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let data_directory = temporary_directory.path();

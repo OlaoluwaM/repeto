@@ -580,20 +580,19 @@ fn append_locked(
         )
     })?;
     let candidate = request.as_value(sequence);
-    validate_candidate(&locked.catalogue, &locked.raw_events, &candidate)?;
-    if candidate.get("event_type").and_then(Value::as_str) == Some("review_completed") {
-        validate_stored_review_value(
-            &locked.scheduler,
-            &locked.derived,
-            &locked.catalogue,
-            &candidate,
-        )?;
-    }
-
     let candidate_line =
         serde_json::to_vec(&candidate).map_err(|error| serialization_error(&error))?;
     let committed_event =
         serde_json::from_slice(&candidate_line).map_err(|error| serialization_error(&error))?;
+    validate_candidate(&locked.catalogue, &locked.raw_events, &committed_event)?;
+    if committed_event.get("event_type").and_then(Value::as_str) == Some("review_completed") {
+        validate_stored_review_value(
+            &locked.scheduler,
+            &locked.derived,
+            &locked.catalogue,
+            &committed_event,
+        )?;
+    }
     let replacement = append_event_bytes(locked.existing_bytes, &candidate_line);
     replace_events_file(data_directory, &replacement, failure_point)?;
 

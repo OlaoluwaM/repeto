@@ -146,6 +146,92 @@ fn records_a_schema_valid_review_with_millisecond_due_time_and_exact_retry() {
 }
 
 #[test]
+fn persisted_reviews_remain_valid_across_float_roundtrips() {
+    let data = setup();
+    activate(data.path());
+    for (index, day) in [4, 5, 6, 7, 8].into_iter().enumerate() {
+        let input = write_review(
+            data.path(),
+            &review(
+                true,
+                &format!("float-roundtrip-{index}"),
+                &format!("2026-09-{day:02}T18:00:00.000Z"),
+            ),
+        );
+        assert_eq!(
+            assert_ok(data.path(), &["review", "record", "--input", &input])["disposition"],
+            "committed"
+        );
+        assert_ok(data.path(), &["check"]);
+    }
+
+    let catalogue = load_catalogue(data.path()).expect("persisted review catalogue");
+    replay(&catalogue).expect("persisted scheduler values replay exactly");
+}
+
+#[test]
+fn unordered_target_sets_survive_activation_revision_reload_and_unrelated_writes() {
+    let data = setup();
+    for path in ["Cards/a.md", "Cards/z.md"] {
+        fs::write(data.path().join("notes").join(path), "# Source").expect("source note");
+    }
+    let target_path = data.path().join("targets/target.yaml");
+    let mut target: Value =
+        serde_yaml::from_str(&fs::read_to_string(&target_path).expect("target YAML"))
+            .expect("target");
+    target["source_notes"] = json!(["Cards/z.md", "Cards/a.md"]);
+    target["origin_references"] = json!(["z", "a"]);
+    fs::write(
+        &target_path,
+        serde_yaml::to_string(&target).expect("target YAML"),
+    )
+    .expect("target");
+
+    activate(data.path());
+    assert_ok(data.path(), &["check"]);
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "pause",
+            "target",
+            "--reason",
+            "Exercise an unrelated write.",
+            "--at",
+            "2026-09-03T12:00:00.000Z",
+        ],
+    );
+
+    add_successor(data.path());
+    let successor_path = data.path().join("targets/target.r2.yaml");
+    let mut successor: Value =
+        serde_yaml::from_str(&fs::read_to_string(&successor_path).expect("successor YAML"))
+            .expect("successor");
+    successor["source_notes"] = json!(["Cards/z.md", "Cards/a.md"]);
+    successor["origin_references"] = json!(["z", "a"]);
+    fs::write(
+        &successor_path,
+        serde_yaml::to_string(&successor).expect("successor YAML"),
+    )
+    .expect("successor");
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "revise",
+            "target",
+            "target.r2",
+            "--reason",
+            "Exercise an unordered successor.",
+            "--at",
+            "2026-09-04T12:00:00.000Z",
+        ],
+    );
+    assert_ok(data.path(), &["check"]);
+    load_catalogue(data.path()).expect("catalogue reloads after canonical snapshots");
+}
+
+#[test]
 fn changed_review_identity_input_conflicts_and_no_answer_violations_use_schema_error() {
     let changes: [fn(&mut Value); 4] = [
         |value: &mut Value| value["occurred_at"] = json!("2026-09-03T12:00:00.000Z"),
@@ -378,7 +464,7 @@ fn check_aggregates_all_stale_sources_while_structural_and_repair_paths_remain_a
             .as_array()
             .expect("aggregated failures")
             .len(),
-        3
+        2
     );
     assert_ok(data.path(), &["target", "list"]);
     assert_ok(data.path(), &["target", "history", "target"]);
@@ -453,6 +539,7 @@ fn check_aggregates_all_stale_sources_while_structural_and_repair_paths_remain_a
         assert_ok(data.path(), &["target", "show", "target.r2"])["lifecycle"],
         "paused"
     );
+    assert_ok(data.path(), &["check"]);
 }
 
 #[test]

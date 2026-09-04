@@ -91,14 +91,16 @@ State-changing commands return `unsupported_write_platform` outside pinned
 
 ## Basic use
 
-Check schemas, replay, and all source-note paths before a review:
+Check schemas, replay, and all non-retired source-note paths before a review:
 
 ```sh
 repeto --data-dir "$REPETO_DATA_DIR" check
 ```
 
-If paths fail, `check` returns every target ID, stored path, and reason. Repair
-them and rerun the full check before creating a review session.
+If paths fail, `check` returns every affected target ID, stored path, and
+reason. Repair them and rerun the full check before creating a review session.
+Retired targets keep historical references, but those files need not remain at
+their old paths.
 
 Get a deterministic queue at a chosen time:
 
@@ -150,12 +152,15 @@ Revision identity is `old_target_id + new_target_id`; changed retry data returns
 Version 1 pins Rust, Cargo dependencies, `fsrs-rs` `6.6.2`, parameters, desired
 retention, and disabled fuzz through Cargo and Nix.
 
-Scheduler values use the effective `f32` representation. Replay checks exact
-bits on pinned `x86_64-linux`. Stored scheduling output is authoritative and is
-never rewritten by replay.
+Scheduler values use the effective `f32` representation. JSON parsing preserves
+their exact widened values, and every event is validated after the exact bytes
+to be stored are serialized and parsed. Replay checks exact bits on pinned
+`x86_64-linux`. Stored scheduling output is authoritative and is never rewritten
+by replay.
 
-Maps and order-independent sets use ordered Rust collections. Repeto does not
-implement a general canonical-JSON layer.
+Maps and order-independent sets use ordered Rust collections. Immutable target
+comparison therefore ignores the order of schema-defined sets while preserving
+every other field. Repeto does not implement a general canonical-JSON layer.
 
 Catalogue loading checks each event against both the JSON Schema and its
 generated Rust type. Replay then uses the original validated JSON value. This
