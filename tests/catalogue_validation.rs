@@ -173,6 +173,20 @@ fn rejects_catalogue_targets_without_the_required_source_notes_field() {
 }
 
 #[test]
+fn structural_validation_rejects_malformed_source_paths_without_reading_files() {
+    let mut malformed = target();
+    malformed["source_notes"] = json!(["../Cards/note.md"]);
+    let error = validate_catalogue(&configuration(), &[target_file(malformed)], &[])
+        .expect_err("malformed historical paths remain invalid");
+
+    assert_eq!(error.code, "invalid_source_note_path");
+    assert_eq!(
+        error.details["failures"][0]["reason"],
+        "invalid_relative_markdown_path"
+    );
+}
+
+#[test]
 fn rejects_duplicate_ids_and_missing_or_cyclic_revision_links() {
     let duplicate = target();
     let error = validate_catalogue(

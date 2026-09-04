@@ -430,6 +430,7 @@ pub fn validate_catalogue(
         }
     }
 
+    validate_source_note_path_syntax(target_files)?;
     validate_revision_graph(&targets)?;
     validate_events(events, &targets)
 }
@@ -554,6 +555,35 @@ pub fn validate_source_note_paths(
             }
         }
     }
+    source_note_path_result(failures)
+}
+
+fn validate_source_note_path_syntax(target_files: &[TargetFile]) -> Result<(), ValidationError> {
+    let mut failures = Vec::new();
+    for target_file in target_files {
+        let target_id = target_id(&target_file.document)?;
+        let source_notes = target_file
+            .document
+            .get("source_notes")
+            .and_then(Value::as_array)
+            .ok_or_else(|| assessment_error("target source_notes are not an array", Value::Null))?;
+        for source_note in source_notes {
+            let stored_path = source_note.as_str().ok_or_else(|| {
+                assessment_error("target source_notes must contain strings", Value::Null)
+            })?;
+            if !is_vault_relative_markdown_path(stored_path) {
+                failures.push(json!({
+                    "target_id": target_id,
+                    "stored_path": stored_path,
+                    "reason": "invalid_relative_markdown_path",
+                }));
+            }
+        }
+    }
+    source_note_path_result(failures)
+}
+
+fn source_note_path_result(mut failures: Vec<Value>) -> Result<(), ValidationError> {
     failures.sort_by_key(Value::to_string);
     if failures.is_empty() {
         Ok(())
