@@ -1,6 +1,6 @@
 # ADR 0003: Pin Deterministic FSRS Scheduling
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR 0004
 - **Date:** 2026-09-02
 
 ## Context
@@ -46,3 +46,4 @@ instead of recalculating the old decision with current code.
 ## Related
 
 - ADR 0002 records how Repeto preserves each scheduling decision.
+- ADR 0004 replaces the old agent-chosen result model and scheduling shape.

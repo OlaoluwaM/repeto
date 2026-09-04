@@ -6,6 +6,7 @@ Read these files before changing behavior:
 
 - `/home/olaolu/Desktop/agent-context/Protocols/Study System/README.md`
 - `/home/olaolu/Desktop/agent-context/Protocols/Study System/Terms.md`
+- `/home/olaolu/Desktop/agent-context/Protocols/Study System/Assessment Policy.md`
 - `/home/olaolu/Desktop/agent-context/Protocols/Study System/Implementation Plan.md`
 
 The Terms file owns study-system definitions. Do not duplicate its glossary in
@@ -30,6 +31,8 @@ toolchain.
 - JSON Schema owns stored field shapes and closed enums.
 - Derived Rust types must come from the checked-in schemas.
 - Rust owns cross-file and state-transition rules.
+- Raw review JSON rejects duplicate object names before schema validation.
+- Each scheduling fact is stored once under one closed scheduling object.
 - Active target definitions are immutable.
 - Any change to an active target creates a revision with a new ID.
 - History carryover requires an explicit one-to-one revision request and a
@@ -40,7 +43,10 @@ toolchain.
 - Equivalent input, configuration, time, and program version must produce
   equivalent JSON.
 - Do not add randomness or interval fuzz.
-- Do not recalculate stored scheduling decisions during replay.
+- Replay may recalculate scheduling only to check integrity. Never rewrite a
+  stored scheduling decision.
+- `review record` gets `occurred_at` from its input and has no `--at` fallback.
+- Read-only commands may run anywhere. State writes require `x86_64-linux`.
 
 ## Implementation rules
 
