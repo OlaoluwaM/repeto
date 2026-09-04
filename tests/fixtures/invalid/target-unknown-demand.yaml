@@ -7,7 +7,7 @@ retrieval_demand:
   description: State the rule.
 canonical_question: What does an immutable borrow permit in Rust?
 correct_answer_requirements:
-  - It grants read access without transferring ownership.
+  read-access: It grants read access without transferring ownership.
 source_notes: []
-verified_sources:
+origin_references:
   - https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html

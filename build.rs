@@ -13,7 +13,20 @@ fn main() {
         "schemas/v1/review-record-input.schema.json",
     ];
 
-    let mut type_space = typify::TypeSpace::new(&typify::TypeSpaceSettings::default());
+    let mut settings = typify::TypeSpaceSettings::default();
+    settings
+        .with_map_type("std::collections::BTreeMap")
+        .with_replacement(
+            "NonBlankString",
+            "super::NonBlankString",
+            std::iter::empty(),
+        )
+        .with_replacement(
+            "NonBlankStringSet",
+            "std::collections::BTreeSet<super::NonBlankString>",
+            std::iter::empty(),
+        );
+    let mut type_space = typify::TypeSpace::new(&settings);
     let target_schema = read_schema(TARGET_SCHEMA_PATH);
     for schema_path in SCHEMAS {
         println!("cargo::rerun-if-changed={schema_path}");

@@ -33,7 +33,7 @@ fn revision_event(
         "schema_version": 1,
         "sequence": sequence,
         "event_type": "revision",
-        "occurred_at": "2026-09-02T12:00:00Z",
+        "occurred_at": "2026-09-02T12:00:00.000Z",
         "target_id": old_target_id,
         "payload": {
             "new_target_id": new_target["id"].clone(),
@@ -49,39 +49,44 @@ fn review_event(sequence: u64, target_id: &str, session_id: &str) -> Value {
         "schema_version": 1,
         "sequence": sequence,
         "event_type": "review_completed",
-        "occurred_at": "2026-09-02T12:00:00Z",
+        "occurred_at": "2026-09-02T12:00:00.000Z",
         "target_id": target_id,
         "payload": {
             "session_id": session_id,
-            "prompt": "What does an immutable borrow permit in Rust?",
-            "cold_answer": "It permits reads without transferring ownership.",
+            "assessment": {
+                "answer_submitted": true,
+                "target_knowledge_supplied_before_answer": false,
+                "requirement_checks": { "read-access": true }
+            },
             "confidence": "sure",
+            "metadata": {
+                "prompt": "What does an immutable borrow permit in Rust?",
+                "answer": "It permits reads without transferring ownership.",
+                "grading_explanation": "Complete.",
+                "verification_sources": ["https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"]
+            },
+            "assessment_policy_id": "repeto-analytic-conjunctive-v1",
             "result": "correct",
-            "grading_notes": "Complete.",
-            "repair": {
-                "required": false,
-                "completed": false,
-                "correction": null,
-                "explanation": null,
-                "explain_back_prompt": null,
-                "explain_back_answer": null
-            },
-            "fsrs_rating": "Good",
-            "scheduler_version": "fsrs-rs-6.6.2",
-            "parameter_set": [0.4],
-            "scheduling_input": {
-                "prior_memory_state": null,
-                "elapsed_days": 0,
-                "rating": "Good",
-                "desired_retention": 0.9
-            },
-            "scheduling_output": {
-                "memory_state": { "stability": 1.0, "difficulty": 5.0 },
-                "interval_days": 1,
-                "retrievability_at_due": 0.9,
-                "due_at": "2026-09-03T12:00:00Z"
-            },
-            "next_due_at": "2026-09-03T12:00:00Z"
+            "scheduling": {
+                "scheduler": {
+                    "implementation": "fsrs-rs",
+                    "version": "6.6.2",
+                    "fuzz_enabled": false,
+                    "parameters": vec![0.0; 21]
+                },
+                "input": {
+                    "prior_memory_state": null,
+                    "elapsed_days": 0,
+                    "rating": "Good",
+                    "desired_retention": 0.9
+                },
+                "output": {
+                    "memory_state": { "stability": 1.0, "difficulty": 5.0 },
+                    "interval_days": 1,
+                    "retrievability_at_due": 0.9,
+                    "due_at": "2026-09-03T12:00:00.000Z"
+                }
+            }
         }
     })
 }
@@ -146,7 +151,7 @@ fn rejects_catalogue_targets_without_the_required_source_notes_field() {
     let error = validate_catalogue(&configuration(), &[target_file(missing_source_notes)], &[])
         .unwrap_err();
 
-    assert_eq!(error.code, "schema_validation_error");
+    assert_eq!(error.code, "schema_validation_failed");
 }
 
 #[test]
@@ -220,7 +225,7 @@ fn rejects_noncontinuous_sequences_unknown_targets_and_illegal_lifecycle_events(
 }
 
 #[test]
-fn rejects_review_rating_and_repair_records_that_disagree_with_result() {
+fn rejects_removed_review_result_rating_and_repair_fields() {
     let mut review = activation_event();
     review["sequence"] = json!(2);
     review["event_type"] = json!("review_completed");
@@ -262,18 +267,7 @@ fn rejects_review_rating_and_repair_records_that_disagree_with_result() {
         &[activation_event(), review.clone()],
     )
     .unwrap_err();
-    assert_eq!(error.code, "invalid_result_rating");
-
-    review["payload"]["fsrs_rating"] = json!("Good");
-    review["payload"]["scheduling_input"]["rating"] = json!("Good");
-    review["payload"]["scheduling_output"]["due_at"] = json!("2026-09-04T12:00:00Z");
-    let error = validate_catalogue(
-        &configuration(),
-        &[target_file(target())],
-        &[activation_event(), review],
-    )
-    .unwrap_err();
-    assert_eq!(error.code, "inconsistent_next_due_at");
+    assert_eq!(error.code, "schema_validation_failed");
 }
 
 #[test]
@@ -299,7 +293,7 @@ fn rejects_an_activation_snapshot_that_differs_from_the_target_file() {
 }
 
 #[test]
-fn rejects_duplicate_cold_reviews_for_one_target_and_session() {
+fn rejects_duplicate_reviews_for_one_target_and_session() {
     let events = [
         activation_event(),
         review_event(2, "rust-borrow", "session-1"),
@@ -380,7 +374,7 @@ fn rejects_revision_payloads_with_a_broken_link_or_missing_carry_history() {
         &[activation_event(), revision],
     )
     .unwrap_err();
-    assert_eq!(error.code, "schema_validation_error");
+    assert_eq!(error.code, "schema_validation_failed");
 
     let mut unrelated_target = target();
     unrelated_target["id"] = json!("rust-borrow.r0");

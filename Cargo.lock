@@ -1195,6 +1195,7 @@ dependencies = [
  "clap",
  "fsrs",
  "jsonschema",
+ "regress",
  "serde",
  "serde_json",
  "serde_yaml_ng",

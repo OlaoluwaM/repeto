@@ -4,35 +4,137 @@
   "title": "RepetoReviewRecordInput",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "target_id", "session_id", "prompt", "cold_answer", "confidence", "result", "grading_notes", "repair"],
+  "required": [
+    "schema_version",
+    "target_id",
+    "session_id",
+    "occurred_at",
+    "assessment",
+    "metadata"
+  ],
   "properties": {
     "schema_version": { "const": 1 },
-    "target_id": { "type": "string", "minLength": 1 },
-    "session_id": { "type": "string", "minLength": 1 },
-    "prompt": { "type": "string", "minLength": 1 },
-    "cold_answer": { "type": "string", "minLength": 1 },
+    "target_id": { "$ref": "#/$defs/NonBlankString" },
+    "session_id": { "$ref": "#/$defs/NonBlankString" },
+    "occurred_at": { "$ref": "#/$defs/ReviewInputUtcMillisecondTimestamp" },
+    "assessment": { "$ref": "#/$defs/ReviewInputAssessment" },
     "confidence": { "type": "string", "enum": ["sure", "shaky", "guessing"] },
-    "result": { "type": "string", "enum": ["correct", "partial", "incorrect", "assisted"] },
-    "grading_notes": { "type": "string", "minLength": 1 },
-    "repair": {
+    "metadata": { "$ref": "#/$defs/ReviewInputMetadata" }
+  },
+  "oneOf": [
+    {
+      "required": ["confidence"],
+      "properties": {
+        "assessment": { "$ref": "#/$defs/ReviewInputIndependentAssessment" },
+        "metadata": { "$ref": "#/$defs/ReviewInputMetadataWithAnswer" }
+      }
+    },
+    {
+      "not": { "required": ["confidence"] },
+      "properties": {
+        "assessment": { "$ref": "#/$defs/ReviewInputAssistedAssessment" },
+        "metadata": { "$ref": "#/$defs/ReviewInputMetadataWithAnswer" }
+      }
+    },
+    {
+      "not": { "required": ["confidence"] },
+      "properties": {
+        "assessment": { "$ref": "#/$defs/ReviewInputNoAnswerAssessment" },
+        "metadata": { "$ref": "#/$defs/ReviewInputMetadataWithoutAnswer" }
+      }
+    }
+  ],
+  "$defs": {
+    "NonBlankString": {
+      "title": "NonBlankString",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "NonBlankStringSet": {
+      "title": "NonBlankStringSet",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/NonBlankString" }
+    },
+    "ReviewInputUtcMillisecondTimestamp": {
+      "title": "ReviewInputUtcMillisecondTimestamp",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "ReviewInputAssessment": {
+      "title": "ReviewInputAssessment",
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "required",
-        "completed",
-        "correction",
-        "explanation",
-        "explain_back_prompt",
-        "explain_back_answer"
+        "answer_submitted",
+        "target_knowledge_supplied_before_answer",
+        "requirement_checks"
       ],
       "properties": {
-        "required": { "type": "boolean" },
-        "completed": { "type": "boolean" },
-        "correction": { "type": ["string", "null"], "minLength": 1 },
-        "explanation": { "type": ["string", "null"], "minLength": 1 },
-        "explain_back_prompt": { "type": ["string", "null"], "minLength": 1 },
-        "explain_back_answer": { "type": ["string", "null"], "minLength": 1 }
+        "answer_submitted": { "type": "boolean" },
+        "target_knowledge_supplied_before_answer": { "type": "boolean" },
+        "requirement_checks": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$" },
+          "additionalProperties": { "type": "boolean" }
+        }
       }
+    },
+    "ReviewInputIndependentAssessment": {
+      "allOf": [
+        { "$ref": "#/$defs/ReviewInputAssessment" },
+        {
+          "properties": {
+            "answer_submitted": { "const": true },
+            "target_knowledge_supplied_before_answer": { "const": false }
+          }
+        }
+      ]
+    },
+    "ReviewInputAssistedAssessment": {
+      "allOf": [
+        { "$ref": "#/$defs/ReviewInputAssessment" },
+        {
+          "properties": {
+            "answer_submitted": { "const": true },
+            "target_knowledge_supplied_before_answer": { "const": true }
+          }
+        }
+      ]
+    },
+    "ReviewInputNoAnswerAssessment": {
+      "allOf": [
+        { "$ref": "#/$defs/ReviewInputAssessment" },
+        { "properties": { "answer_submitted": { "const": false } } }
+      ]
+    },
+    "ReviewInputMetadata": {
+      "title": "ReviewInputMetadata",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prompt", "grading_explanation", "verification_sources"],
+      "properties": {
+        "prompt": { "$ref": "#/$defs/NonBlankString" },
+        "answer": { "$ref": "#/$defs/NonBlankString" },
+        "grading_explanation": { "$ref": "#/$defs/NonBlankString" },
+        "verification_sources": { "$ref": "#/$defs/NonBlankStringSet" }
+      }
+    },
+    "ReviewInputMetadataWithAnswer": {
+      "allOf": [
+        { "$ref": "#/$defs/ReviewInputMetadata" },
+        { "required": ["answer"] }
+      ]
+    },
+    "ReviewInputMetadataWithoutAnswer": {
+      "allOf": [
+        { "$ref": "#/$defs/ReviewInputMetadata" },
+        { "not": { "required": ["answer"] } }
+      ]
     }
   }
 }

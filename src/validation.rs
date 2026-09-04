@@ -2,11 +2,14 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fmt, fs,
+    env, fmt, fs,
     path::{Path, PathBuf},
 };
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{
+    Deserialize, Serialize,
+    de::{self, DeserializeOwned, MapAccess, SeqAccess, Visitor},
+};
 use serde_json::{Value, json};
 
 use crate::domain::{
@@ -129,13 +132,117 @@ pub fn parse_yaml(input: &str) -> Result<Value, ValidationError> {
 ///
 /// Returns a stable error when the input is not valid JSON.
 pub fn parse_json(input: &str) -> Result<Value, ValidationError> {
-    serde_json::from_str(input).map_err(|error| {
+    let mut deserializer = serde_json::Deserializer::from_str(input);
+    let value = StrictJsonValue::deserialize(&mut deserializer).map_err(|error| {
+        let code = if error.to_string().starts_with(DUPLICATE_JSON_KEY_PREFIX) {
+            "duplicate_json_key"
+        } else {
+            "json_parse_error"
+        };
+        ValidationError::new(
+            code,
+            "input is not valid JSON",
+            json!({ "error": error.to_string() }),
+        )
+    })?;
+    deserializer.end().map_err(|error| {
         ValidationError::new(
             "json_parse_error",
             "input is not valid JSON",
             json!({ "error": error.to_string() }),
         )
-    })
+    })?;
+    Ok(value.0)
+}
+
+const DUPLICATE_JSON_KEY_PREFIX: &str = "duplicate JSON object key: ";
+
+/// A JSON value deserialized without permitting duplicate object member names.
+struct StrictJsonValue(Value);
+
+impl<'de> Deserialize<'de> for StrictJsonValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(StrictJsonValueVisitor)
+    }
+}
+
+struct StrictJsonValueVisitor;
+
+impl<'de> Visitor<'de> for StrictJsonValueVisitor {
+    type Value = StrictJsonValue;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(StrictJsonValue(Value::Bool(value)))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(StrictJsonValue(Value::Number(value.into())))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(StrictJsonValue(Value::Number(value.into())))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        serde_json::Number::from_f64(value)
+            .map(Value::Number)
+            .map(StrictJsonValue)
+            .ok_or_else(|| E::custom("JSON numbers must be finite"))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(StrictJsonValue(Value::String(value.to_owned())))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(StrictJsonValue(Value::String(value)))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(StrictJsonValue(Value::Null))
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(StrictJsonValue(Value::Null))
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(value) = sequence.next_element::<StrictJsonValue>()? {
+            values.push(value.0);
+        }
+        Ok(StrictJsonValue(Value::Array(values)))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut object = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if object.contains_key(&key) {
+                return Err(de::Error::custom(format!(
+                    "{DUPLICATE_JSON_KEY_PREFIX}{key}"
+                )));
+            }
+            let value = map.next_value::<StrictJsonValue>()?;
+            object.insert(key, value.0);
+        }
+        Ok(StrictJsonValue(Value::Object(object)))
+    }
 }
 
 /// Validates one external value against its canonical version 1 schema.
@@ -188,7 +295,7 @@ pub fn validate_document(kind: SchemaKind, value: &Value) -> Result<(), Validati
         Ok(())
     } else {
         Err(ValidationError::new(
-            "schema_validation_error",
+            "schema_validation_failed",
             format!("{} does not match the version 1 schema", kind.name()),
             json!({ "errors": errors }),
         ))
@@ -207,7 +314,7 @@ pub fn parse_document<T: DeserializeOwned>(
     validate_document(kind, &value)?;
     serde_json::from_value(value).map_err(|error| {
         ValidationError::new(
-            "document_deserialization_error",
+            "schema_validation_failed",
             format!(
                 "{} could not be deserialized after schema validation",
                 kind.name()
@@ -289,14 +396,6 @@ pub fn parse_review_record_input(
         parse_json(input)?
     };
     validate_document(SchemaKind::ReviewRecordInput, &value)?;
-    let result = value
-        .get("result")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid_event_payload("review-record input"))?;
-    let repair = value
-        .get("repair")
-        .ok_or_else(|| invalid_event_payload("review-record input"))?;
-    validate_repair_record(result, repair)?;
     parse_document(SchemaKind::ReviewRecordInput, value)
 }
 
@@ -330,6 +429,218 @@ pub fn validate_catalogue(
     validate_events(events, &targets)
 }
 
+/// Expands the restricted environment references accepted in `source_note_root`.
+///
+/// Only `$NAME` and `${NAME}` forms are valid. The function does not invoke a
+/// shell and rejects unsupported shell syntax instead of interpreting it.
+///
+/// # Errors
+///
+/// Returns a stable environment-reference error for malformed, missing, or
+/// non-Unicode variables.
+pub fn expand_source_note_root(value: &str) -> Result<PathBuf, ValidationError> {
+    let mut expanded = String::with_capacity(value.len());
+    let mut characters = value.char_indices().peekable();
+    while let Some((index, character)) = characters.next() {
+        if character != '$' {
+            expanded.push(character);
+            continue;
+        }
+        let Some((_, next)) = characters.peek().copied() else {
+            return Err(malformed_environment_reference(value, index));
+        };
+        let name = if next == '{' {
+            characters.next();
+            let start = characters
+                .peek()
+                .map(|(position, _)| *position)
+                .unwrap_or(value.len());
+            let mut end = None;
+            while let Some((position, current)) = characters.next() {
+                if current == '}' {
+                    end = Some(position);
+                    break;
+                }
+            }
+            let Some(end) = end else {
+                return Err(malformed_environment_reference(value, index));
+            };
+            let name = &value[start..end];
+            if !is_environment_name(name) {
+                return Err(malformed_environment_reference(value, index));
+            }
+            name
+        } else {
+            if !is_environment_name_start(next) {
+                return Err(malformed_environment_reference(value, index));
+            }
+            let start = characters
+                .peek()
+                .map(|(position, _)| *position)
+                .unwrap_or(value.len());
+            let mut end = value.len();
+            while let Some((position, current)) = characters.peek().copied() {
+                if !is_environment_name_continue(current) {
+                    end = position;
+                    break;
+                }
+                characters.next();
+            }
+            &value[start..end]
+        };
+        let environment_value = env::var_os(name).ok_or_else(|| {
+            ValidationError::new(
+                "missing_environment_variable",
+                "source_note_root references an environment variable that is not set",
+                json!({ "name": name }),
+            )
+        })?;
+        let environment_value = environment_value.into_string().map_err(|_| {
+            ValidationError::new(
+                "non_unicode_environment_variable",
+                "source_note_root references an environment variable that is not Unicode",
+                json!({ "name": name }),
+            )
+        })?;
+        expanded.push_str(&environment_value);
+    }
+    Ok(PathBuf::from(expanded))
+}
+
+/// Validates every target source-note path against the configured vault root.
+///
+/// Structural catalogue validation intentionally does not call this function,
+/// so stale external paths remain inspectable for repair.
+///
+/// # Errors
+///
+/// Returns one root error or one `invalid_source_note_path` error with all
+/// deterministic target/path failures under `details.failures`.
+pub fn validate_source_note_paths(
+    configuration: &Value,
+    target_files: &[TargetFile],
+) -> Result<(), ValidationError> {
+    validate_document(SchemaKind::Configuration, configuration)?;
+    for target_file in target_files {
+        validate_document(SchemaKind::Target, &target_file.document)?;
+    }
+    let root_value = configuration
+        .get("source_note_root")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_source_note_root("missing", Value::Null))?;
+    let root = expand_source_note_root(root_value)?;
+    let canonical_root = canonical_source_note_root(&root, root_value)?;
+    let mut failures = Vec::new();
+    for target_file in target_files {
+        let target_id = target_id(&target_file.document)?;
+        let source_notes = target_file
+            .document
+            .get("source_notes")
+            .and_then(Value::as_array)
+            .ok_or_else(|| assessment_error("target source_notes are not an array", Value::Null))?;
+        for source_note in source_notes {
+            let stored_path = source_note.as_str().ok_or_else(|| {
+                assessment_error("target source_notes must contain strings", Value::Null)
+            })?;
+            if let Err(reason) = validate_one_source_note(&canonical_root, stored_path) {
+                failures.push(json!({
+                    "target_id": target_id,
+                    "stored_path": stored_path,
+                    "reason": reason,
+                }));
+            }
+        }
+    }
+    failures.sort_by(|left, right| left.to_string().cmp(&right.to_string()));
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(ValidationError::new(
+            "invalid_source_note_path",
+            "one or more source-note paths are invalid",
+            json!({ "failures": failures }),
+        ))
+    }
+}
+
+fn is_environment_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters.next().is_some_and(is_environment_name_start)
+        && characters.all(is_environment_name_continue)
+}
+
+const fn is_environment_name_start(character: char) -> bool {
+    character.is_ascii_alphabetic() || character == '_'
+}
+
+const fn is_environment_name_continue(character: char) -> bool {
+    is_environment_name_start(character) || character.is_ascii_digit()
+}
+
+fn malformed_environment_reference(value: &str, position: usize) -> ValidationError {
+    ValidationError::new(
+        "malformed_environment_reference",
+        "source_note_root contains an unsupported environment reference",
+        json!({ "source_note_root": value, "position": position }),
+    )
+}
+
+fn canonical_source_note_root(root: &Path, stored_root: &str) -> Result<PathBuf, ValidationError> {
+    if !root.is_absolute() {
+        return Err(invalid_source_note_root(
+            "not_absolute",
+            json!({ "source_note_root": stored_root }),
+        ));
+    }
+    let canonical_root = fs::canonicalize(root).map_err(|error| {
+        invalid_source_note_root(
+            "not_found",
+            json!({ "source_note_root": stored_root, "error": error.to_string() }),
+        )
+    })?;
+    if !canonical_root.is_dir() {
+        return Err(invalid_source_note_root(
+            "not_directory",
+            json!({ "source_note_root": stored_root }),
+        ));
+    }
+    Ok(canonical_root)
+}
+
+fn invalid_source_note_root(reason: &str, details: Value) -> ValidationError {
+    ValidationError::new(
+        "invalid_source_note_root",
+        "source_note_root is not an existing absolute directory",
+        json!({ "reason": reason, "details": details }),
+    )
+}
+
+fn validate_one_source_note(root: &Path, stored_path: &str) -> Result<(), &'static str> {
+    if !is_vault_relative_markdown_path(stored_path) {
+        return Err("invalid_relative_markdown_path");
+    }
+    let candidate = root.join(stored_path);
+    let canonical_candidate = fs::canonicalize(&candidate).map_err(|_| "not_found")?;
+    if !canonical_candidate.starts_with(root) {
+        return Err("escapes_source_note_root");
+    }
+    if !canonical_candidate.is_file() {
+        return Err("not_regular_file");
+    }
+    Ok(())
+}
+
+fn is_vault_relative_markdown_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.ends_with('/')
+        && !path.contains('\\')
+        && path.ends_with(".md")
+        && path
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
 fn load_yaml_file(path: &Path) -> Result<Value, ValidationError> {
     let contents = fs::read_to_string(path).map_err(|error| io_error(path, &error))?;
     parse_yaml(&contents)
@@ -355,9 +666,9 @@ fn check_schema_version(value: &Value) -> Result<(), ValidationError> {
         Ok(())
     } else {
         Err(ValidationError::new(
-            "unsupported_schema_version",
+            "schema_validation_failed",
             "only schema_version 1 is supported",
-            json!({ "schema_version": value.get("schema_version") }),
+            json!({ "schema_version": value.get("schema_version"), "errors": ["only schema_version 1 is supported"] }),
         ))
     }
 }
@@ -369,7 +680,7 @@ fn target_id(value: &Value) -> Result<String, ValidationError> {
         .map(ToOwned::to_owned)
         .ok_or_else(|| {
             ValidationError::new(
-                "schema_validation_error",
+                "schema_validation_failed",
                 "target is missing an ID",
                 Value::Null,
             )
@@ -519,7 +830,7 @@ fn validate_event_transition(
         ),
         "retirement" => retire_target(payload, target_id, state, states),
         "revision" => revise_target(payload, target_id, state, targets, states),
-        "review_completed" => record_review(payload, target_id, state, reviewed_sessions),
+        "review_completed" => record_review(payload, target_id, state, targets, reviewed_sessions),
         _ => Err(invalid_event_payload(event_type)),
     }
 }
@@ -533,6 +844,17 @@ fn activate_target(
 ) -> Result<(), ValidationError> {
     require_payload_keys(payload, &["definition"], "activation")?;
     require_state(state, LifecycleState::Draft, "activation", target_id)?;
+    if targets
+        .get(target_id)
+        .and_then(|target| target.get("replaces_target_id"))
+        .is_some()
+    {
+        return Err(ValidationError::new(
+            "event_payload_mismatch",
+            "a replacement target must enter the catalogue through a revision event",
+            json!({ "target_id": target_id }),
+        ));
+    }
     validate_event_definition(payload, target_id, targets)?;
     states.insert(target_id.to_owned(), LifecycleState::Active);
     Ok(())
@@ -615,26 +937,37 @@ fn record_review(
     payload: &Value,
     target_id: &str,
     state: LifecycleState,
+    targets: &BTreeMap<String, &Value>,
     reviewed_sessions: &mut BTreeSet<(String, String)>,
 ) -> Result<(), ValidationError> {
     const REVIEW_FIELDS: &[&str] = &[
         "session_id",
-        "prompt",
-        "cold_answer",
-        "confidence",
+        "assessment",
+        "metadata",
+        "assessment_policy_id",
         "result",
-        "grading_notes",
-        "repair",
-        "fsrs_rating",
-        "scheduler_version",
-        "parameter_set",
-        "scheduling_input",
-        "scheduling_output",
-        "next_due_at",
+        "scheduling",
     ];
-    require_payload_keys(payload, REVIEW_FIELDS, "review_completed")?;
+    let has_optional_confidence = payload.get("confidence").is_some();
+    let actual_fields = REVIEW_FIELDS.len() + usize::from(has_optional_confidence);
+    let object = payload
+        .as_object()
+        .ok_or_else(|| invalid_event_payload("review_completed"))?;
+    if object.len() != actual_fields
+        || !REVIEW_FIELDS
+            .iter()
+            .all(|field| object.contains_key(*field))
+        || object
+            .keys()
+            .any(|field| field != "confidence" && !REVIEW_FIELDS.contains(&field.as_str()))
+    {
+        return Err(invalid_event_payload("review_completed"));
+    }
     require_state(state, LifecycleState::Active, "review_completed", target_id)?;
-    validate_review_payload(payload, target_id, reviewed_sessions)
+    let target = targets
+        .get(target_id)
+        .ok_or_else(|| invalid_event_payload("review_completed"))?;
+    validate_review_payload(payload, target, target_id, reviewed_sessions)
 }
 
 fn validate_event_definition(
@@ -661,6 +994,7 @@ fn validate_event_definition(
 
 fn validate_review_payload(
     payload: &Value,
+    target: &Value,
     target_id: &str,
     reviewed_sessions: &mut BTreeSet<(String, String)>,
 ) -> Result<(), ValidationError> {
@@ -671,89 +1005,86 @@ fn validate_review_payload(
     if !reviewed_sessions.insert((target_id.to_owned(), session_id.to_owned())) {
         return Err(ValidationError::new(
             "duplicate_review_session",
-            "a target can have only one cold review per session ID",
+            "a target can have only one review per session ID",
             json!({ "target_id": target_id, "session_id": session_id }),
         ));
     }
 
-    let result = payload
-        .get("result")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid_event_payload("review_completed"))?;
-    let expected_rating = if result == "correct" { "Good" } else { "Again" };
-    if payload.get("fsrs_rating").and_then(Value::as_str) != Some(expected_rating) {
-        return Err(ValidationError::new(
-            "invalid_result_rating",
-            "review result must use the fixed FSRS rating mapping",
-            json!({ "result": result, "expected_rating": expected_rating }),
+    validate_assessment_for_target(
+        payload
+            .get("assessment")
+            .ok_or_else(|| invalid_event_payload("review_completed"))?,
+        target,
+    )
+}
+
+/// Validates review-input assessment facts that need the selected target.
+///
+/// This function checks shape relationships only. The assessment crate owns
+/// derivation of the completed-review result.
+///
+/// # Errors
+///
+/// Returns `schema_validation_failed` when the assessment does not describe
+/// exactly the target's requirements or a no-answer assessment records a met
+/// requirement.
+pub fn validate_review_input_for_target(
+    review_input: &Value,
+    target: &Value,
+) -> Result<(), ValidationError> {
+    validate_document(SchemaKind::ReviewRecordInput, review_input)?;
+    validate_document(SchemaKind::Target, target)?;
+    let assessment = review_input.get("assessment").ok_or_else(|| {
+        ValidationError::new(
+            "schema_validation_failed",
+            "review input is missing its assessment",
+            Value::Null,
+        )
+    })?;
+    validate_assessment_for_target(assessment, target)
+}
+
+fn validate_assessment_for_target(
+    assessment: &Value,
+    target: &Value,
+) -> Result<(), ValidationError> {
+    let target_requirements = target
+        .get("correct_answer_requirements")
+        .and_then(Value::as_object)
+        .ok_or_else(|| assessment_error("target requirements are not an object", Value::Null))?;
+    let checks = assessment
+        .get("requirement_checks")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            assessment_error(
+                "assessment requirement checks are not an object",
+                Value::Null,
+            )
+        })?;
+    let expected = target_requirements.keys().collect::<BTreeSet<_>>();
+    let actual = checks.keys().collect::<BTreeSet<_>>();
+    if actual != expected {
+        return Err(assessment_error(
+            "assessment requirement keys must exactly match the target",
+            json!({
+                "expected_requirement_ids": expected,
+                "actual_requirement_ids": actual,
+            }),
         ));
     }
-
-    let repair = payload
-        .get("repair")
-        .ok_or_else(|| invalid_event_payload("review_completed"))?;
-    validate_repair_record(result, repair)?;
-
-    let scheduling_input = payload
-        .get("scheduling_input")
-        .ok_or_else(|| invalid_event_payload("review_completed"))?;
-    if scheduling_input.get("rating").and_then(Value::as_str) != Some(expected_rating) {
-        return Err(ValidationError::new(
-            "invalid_scheduling_rating",
-            "scheduling input rating must match the fixed result mapping",
-            json!({ "result": result, "expected_rating": expected_rating }),
-        ));
-    }
-    let output_due_at = payload
-        .get("scheduling_output")
-        .and_then(|output| output.get("due_at"))
-        .and_then(Value::as_str);
-    let next_due_at = payload.get("next_due_at").and_then(Value::as_str);
-    if output_due_at != next_due_at {
-        return Err(ValidationError::new(
-            "inconsistent_next_due_at",
-            "next_due_at must match scheduling_output.due_at",
-            json!({ "next_due_at": next_due_at, "scheduling_output_due_at": output_due_at }),
+    if assessment.get("answer_submitted") == Some(&Value::Bool(false))
+        && checks.values().any(|value| value == &Value::Bool(true))
+    {
+        return Err(assessment_error(
+            "a no-answer assessment must mark every requirement false",
+            Value::Null,
         ));
     }
     Ok(())
 }
 
-fn validate_repair_record(result: &str, repair: &Value) -> Result<(), ValidationError> {
-    let required = repair.get("required").and_then(Value::as_bool);
-    let completed = repair.get("completed").and_then(Value::as_bool);
-    let correction = repair.get("correction");
-    let explanation = repair.get("explanation");
-    let explain_back_prompt = repair.get("explain_back_prompt");
-    let explain_back_answer = repair.get("explain_back_answer");
-    let expected_repair = result != "correct";
-    let has_correction = correction.and_then(Value::as_str).is_some();
-    let has_explanation = explanation.and_then(Value::as_str).is_some();
-    let has_explain_back_prompt = explain_back_prompt.and_then(Value::as_str).is_some();
-    let has_explain_back_answer = explain_back_answer.and_then(Value::as_str).is_some();
-    let no_repair_text = [
-        correction,
-        explanation,
-        explain_back_prompt,
-        explain_back_answer,
-    ]
-    .into_iter()
-    .all(|value| value == Some(&Value::Null));
-    if required != Some(expected_repair)
-        || (expected_repair
-            && (!has_correction
-                || !has_explanation
-                || (has_explain_back_answer && !has_explain_back_prompt)
-                || (completed == Some(true) && !has_explain_back_answer)))
-        || (!expected_repair && (completed != Some(false) || !no_repair_text))
-    {
-        return Err(ValidationError::new(
-            "invalid_repair_record",
-            "repair details must agree with the cold review result",
-            json!({ "result": result }),
-        ));
-    }
-    Ok(())
+fn assessment_error(message: impl Into<String>, details: Value) -> ValidationError {
+    ValidationError::new("schema_validation_failed", message, details)
 }
 
 fn event_string<'a>(event: &'a Value, field: &str) -> Result<&'a str, ValidationError> {

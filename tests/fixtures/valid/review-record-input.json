@@ -2,17 +2,21 @@
   "schema_version": 1,
   "target_id": "rust-borrow",
   "session_id": "2026-09-02-am",
-  "prompt": "What does an immutable borrow permit in Rust?",
-  "cold_answer": "It permits reads without transferring ownership.",
+  "occurred_at": "2026-09-02T12:01:00.000Z",
+  "assessment": {
+    "answer_submitted": true,
+    "target_knowledge_supplied_before_answer": false,
+    "requirement_checks": {
+      "read-access": true
+    }
+  },
   "confidence": "sure",
-  "result": "correct",
-  "grading_notes": "The answer covers the correct-answer requirement.",
-  "repair": {
-    "required": false,
-    "completed": false,
-    "correction": null,
-    "explanation": null,
-    "explain_back_prompt": null,
-    "explain_back_answer": null
+  "metadata": {
+    "prompt": "What does an immutable borrow permit in Rust?",
+    "answer": "It permits reads without transferring ownership.",
+    "grading_explanation": "The answer covers the correct-answer requirement.",
+    "verification_sources": [
+      "https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"
+    ]
   }
 }

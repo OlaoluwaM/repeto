@@ -12,8 +12,8 @@
       "type": "string",
       "enum": ["activation", "pause", "resume", "retirement", "revision", "review_completed"]
     },
-    "occurred_at": { "type": "string", "format": "date-time" },
-    "target_id": { "type": "string", "minLength": 1 },
+    "occurred_at": { "$ref": "#/$defs/EventUtcMillisecondTimestamp" },
+    "target_id": { "$ref": "#/$defs/NonBlankString" },
     "payload": {
       "anyOf": [
         {
@@ -26,15 +26,15 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["reason"],
-          "properties": { "reason": { "type": "string", "minLength": 1 } }
+          "properties": { "reason": { "$ref": "#/$defs/NonBlankString" } }
         },
         {
           "type": "object",
           "additionalProperties": false,
           "required": ["new_target_id", "reason", "carry_history", "definition"],
           "properties": {
-            "new_target_id": { "type": "string", "minLength": 1 },
-            "reason": { "type": "string", "minLength": 1 },
+            "new_target_id": { "$ref": "#/$defs/NonBlankString" },
+            "reason": { "$ref": "#/$defs/NonBlankString" },
             "carry_history": { "type": "boolean" },
             "definition": { "$ref": "urn:repeto:schema:v1:target" }
           }
@@ -44,40 +44,69 @@
           "additionalProperties": false,
           "required": [
             "session_id",
-            "prompt",
-            "cold_answer",
-            "confidence",
+            "assessment",
+            "metadata",
+            "assessment_policy_id",
             "result",
-            "grading_notes",
-            "repair",
-            "fsrs_rating",
-            "scheduler_version",
-            "parameter_set",
-            "scheduling_input",
-            "scheduling_output",
-            "next_due_at"
+            "scheduling"
           ],
           "properties": {
-            "session_id": { "type": "string", "minLength": 1 },
-            "prompt": { "type": "string", "minLength": 1 },
-            "cold_answer": { "type": "string", "minLength": 1 },
+            "session_id": { "$ref": "#/$defs/NonBlankString" },
+            "assessment": { "$ref": "#/$defs/EventAssessment" },
             "confidence": { "type": "string", "enum": ["sure", "shaky", "guessing"] },
-            "result": { "type": "string", "enum": ["correct", "partial", "incorrect", "assisted"] },
-            "grading_notes": { "type": "string", "minLength": 1 },
-            "repair": { "$ref": "#/$defs/repair_record" },
-            "fsrs_rating": { "type": "string", "enum": ["Again", "Good"] },
-            "scheduler_version": { "type": "string", "minLength": 1 },
-            "parameter_set": { "type": "array", "minItems": 1, "items": { "type": "number" } },
-            "scheduling_input": { "$ref": "#/$defs/scheduling_input" },
-            "scheduling_output": { "$ref": "#/$defs/scheduling_output" },
-            "next_due_at": { "type": "string", "format": "date-time" }
-          }
+            "metadata": { "$ref": "#/$defs/EventReviewMetadata" },
+            "assessment_policy_id": { "const": "repeto-analytic-conjunctive-v1" },
+            "result": { "type": "string", "enum": ["correct", "not_correct"] },
+            "scheduling": { "$ref": "#/$defs/Scheduling" }
+          },
+          "oneOf": [
+            {
+              "required": ["confidence"],
+              "properties": {
+                "assessment": { "$ref": "#/$defs/EventIndependentAssessment" },
+                "metadata": { "$ref": "#/$defs/EventReviewMetadataWithAnswer" }
+              }
+            },
+            {
+              "not": { "required": ["confidence"] },
+              "properties": {
+                "assessment": { "$ref": "#/$defs/EventAssistedAssessment" },
+                "metadata": { "$ref": "#/$defs/EventReviewMetadataWithAnswer" }
+              }
+            },
+            {
+              "not": { "required": ["confidence"] },
+              "properties": {
+                "assessment": { "$ref": "#/$defs/EventNoAnswerAssessment" },
+                "metadata": { "$ref": "#/$defs/EventReviewMetadataWithoutAnswer" }
+              }
+            }
+          ]
         }
       ]
     }
   },
   "$defs": {
-    "memory_state": {
+    "NonBlankString": {
+      "title": "NonBlankString",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "NonBlankStringSet": {
+      "title": "NonBlankStringSet",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/NonBlankString" }
+    },
+    "EventUtcMillisecondTimestamp": {
+      "title": "EventUtcMillisecondTimestamp",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "MemoryState": {
       "type": "object",
       "additionalProperties": false,
       "required": ["stability", "difficulty"],
@@ -86,43 +115,114 @@
         "difficulty": { "type": "number", "minimum": 0 }
       }
     },
-    "repair_record": {
+    "EventAssessment": {
+      "title": "EventAssessment",
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "required",
-        "completed",
-        "correction",
-        "explanation",
-        "explain_back_prompt",
-        "explain_back_answer"
-      ],
+      "required": ["answer_submitted", "target_knowledge_supplied_before_answer", "requirement_checks"],
       "properties": {
-        "required": { "type": "boolean" },
-        "completed": { "type": "boolean" },
-        "correction": { "type": ["string", "null"], "minLength": 1 },
-        "explanation": { "type": ["string", "null"], "minLength": 1 },
-        "explain_back_prompt": { "type": ["string", "null"], "minLength": 1 },
-        "explain_back_answer": { "type": ["string", "null"], "minLength": 1 }
+        "answer_submitted": { "type": "boolean" },
+        "target_knowledge_supplied_before_answer": { "type": "boolean" },
+        "requirement_checks": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$" },
+          "additionalProperties": { "type": "boolean" }
+        }
       }
     },
-    "scheduling_input": {
+    "EventIndependentAssessment": {
+      "allOf": [
+        { "$ref": "#/$defs/EventAssessment" },
+        {
+          "properties": {
+            "answer_submitted": { "const": true },
+            "target_knowledge_supplied_before_answer": { "const": false }
+          }
+        }
+      ]
+    },
+    "EventAssistedAssessment": {
+      "allOf": [
+        { "$ref": "#/$defs/EventAssessment" },
+        {
+          "properties": {
+            "answer_submitted": { "const": true },
+            "target_knowledge_supplied_before_answer": { "const": true }
+          }
+        }
+      ]
+    },
+    "EventNoAnswerAssessment": {
+      "allOf": [
+        { "$ref": "#/$defs/EventAssessment" },
+        { "properties": { "answer_submitted": { "const": false } } }
+      ]
+    },
+    "EventReviewMetadata": {
+      "title": "EventReviewMetadata",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prompt", "grading_explanation", "verification_sources"],
+      "properties": {
+        "prompt": { "$ref": "#/$defs/NonBlankString" },
+        "answer": { "$ref": "#/$defs/NonBlankString" },
+        "grading_explanation": { "$ref": "#/$defs/NonBlankString" },
+        "verification_sources": { "$ref": "#/$defs/NonBlankStringSet" }
+      }
+    },
+    "EventReviewMetadataWithAnswer": {
+      "allOf": [
+        { "$ref": "#/$defs/EventReviewMetadata" },
+        { "required": ["answer"] }
+      ]
+    },
+    "EventReviewMetadataWithoutAnswer": {
+      "allOf": [
+        { "$ref": "#/$defs/EventReviewMetadata" },
+        { "not": { "required": ["answer"] } }
+      ]
+    },
+    "Scheduling": {
+      "title": "Scheduling",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scheduler", "input", "output"],
+      "properties": {
+        "scheduler": { "$ref": "#/$defs/SchedulerIdentity" },
+        "input": { "$ref": "#/$defs/SchedulingInput" },
+        "output": { "$ref": "#/$defs/SchedulingOutput" }
+      }
+    },
+    "SchedulerIdentity": {
+      "title": "SchedulerIdentity",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation", "version", "fuzz_enabled", "parameters"],
+      "properties": {
+        "implementation": { "const": "fsrs-rs" },
+        "version": { "const": "6.6.2" },
+        "fuzz_enabled": { "const": false },
+        "parameters": { "type": "array", "minItems": 21, "maxItems": 21, "items": { "type": "number" } }
+      }
+    },
+    "SchedulingInput": {
       "type": "object",
       "additionalProperties": false,
       "required": ["prior_memory_state", "elapsed_days", "rating", "desired_retention"],
       "properties": {
-        "prior_memory_state": { "anyOf": [{ "$ref": "#/$defs/memory_state" }, { "type": "null" }] },
-        "elapsed_days": { "type": "number", "minimum": 0 },
+        "prior_memory_state": { "anyOf": [{ "$ref": "#/$defs/MemoryState" }, { "type": "null" }] },
+        "elapsed_days": { "type": "integer", "minimum": 0 },
         "rating": { "type": "string", "enum": ["Again", "Good"] },
         "desired_retention": { "type": "number", "const": 0.9 }
       }
     },
-    "scheduling_output": {
+    "SchedulingOutput": {
       "type": "object",
       "additionalProperties": false,
       "required": ["memory_state", "interval_days", "retrievability_at_due", "due_at"],
       "properties": {
-        "memory_state": { "$ref": "#/$defs/memory_state" },
+        "memory_state": { "$ref": "#/$defs/MemoryState" },
         "interval_days": { "type": "integer", "minimum": 0 },
         "retrievability_at_due": {
           "description": "Retrievability computed from the resulting memory state at the stored `due_at` time.",
@@ -130,7 +230,7 @@
           "minimum": 0,
           "maximum": 1
         },
-        "due_at": { "type": "string", "format": "date-time" }
+        "due_at": { "$ref": "#/$defs/EventUtcMillisecondTimestamp" }
       }
     }
   }
