@@ -1,440 +1,692 @@
-use std::{
-    fs,
-    io::Write,
-    path::Path,
-    process::{Command, Output, Stdio},
-};
+use std::{fs, path::Path, process::Command};
 
+use repeto::{events::replay, validation::load_catalogue};
 use serde_json::{Value, json};
+
+type EventMutation = (fn(&mut Value), &'static str);
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_repeto")
 }
-
-fn data_directory() -> tempfile::TempDir {
-    let temporary = tempfile::tempdir().expect("temporary directory must exist");
-    fs::create_dir(temporary.path().join("targets")).expect("target directory must exist");
-    let parameters = fsrs_rs::DEFAULT_PARAMETERS
-        .iter()
-        .map(|parameter| Value::from(f64::from(*parameter)))
-        .collect::<Vec<_>>();
-    fs::write(
-        temporary.path().join("config.yaml"),
-        serde_yaml::to_string(&json!({
-            "schema_version": 1,
-            "desired_retention": 0.9,
-            "scheduler": {
-                "implementation": "fsrs-rs",
-                "version": "6.6.2",
-                "parameters": parameters,
-            },
-            "fuzz_enabled": false,
-            "default_recommended_target_count": 3,
-            "queue_priority_policy_version": 1,
-        }))
-        .expect("configuration must serialize"),
-    )
-    .expect("configuration must write");
-    write_target(temporary.path(), "rust-borrow", "Rust", None);
-    write_target(temporary.path(), "rust-lifetime", "Rust", None);
-    write_target(temporary.path(), "sql-index", "SQL", None);
-    fs::write(temporary.path().join("events.jsonl"), "").expect("event history must write");
-    temporary
-}
-
-fn write_target(data_directory: &Path, id: &str, topic: &str, replaces: Option<&str>) {
-    let mut target: Value =
-        serde_yaml::from_str(include_str!("fixtures/valid/targets/rust-borrow.yaml"))
-            .expect("target fixture must parse");
-    target["id"] = json!(id);
-    target["topic"] = json!(topic);
-    if let Some(replaces) = replaces {
-        target["replaces_target_id"] = json!(replaces);
-    }
-    fs::write(
-        data_directory.join("targets").join(format!("{id}.yaml")),
-        serde_yaml::to_string(&target).expect("target must serialize"),
-    )
-    .expect("target must write");
-}
-
-fn run(data_directory: &Path, arguments: &[&str]) -> Output {
-    Command::new(binary())
-        .args(arguments)
-        .env("REPETO_DATA_DIR", data_directory)
-        .current_dir("/")
-        .output()
-        .expect("CLI process must run")
-}
-
-fn json(bytes: &[u8]) -> Value {
-    serde_json::from_slice(bytes).expect("command output must be JSON")
-}
-
-fn assert_success(mut output: Output) -> Value {
-    let stderr = std::mem::take(&mut output.stderr);
-    let stdout = std::mem::take(&mut output.stdout);
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&stderr)
-    );
-    assert!(stderr.is_empty());
-    let output = json(&stdout);
-    assert_eq!(output["ok"], true);
-    output["data"].clone()
-}
-
-fn assert_failure(mut output: Output, code: &str) {
-    let stdout = std::mem::take(&mut output.stdout);
-    let stderr = std::mem::take(&mut output.stderr);
-    assert!(!output.status.success());
-    assert!(stdout.is_empty());
-    let output = json(&stderr);
-    assert_eq!(output["ok"], false);
-    assert_eq!(output["error"]["code"], code);
-}
-
-fn activate(data_directory: &Path, id: &str) {
-    assert_success(run(
-        data_directory,
-        &["target", "activate", id, "--at", "2026-09-02T12:00:00Z"],
-    ));
-}
-
-fn review_input(target_id: &str, session_id: &str, result: &str) -> Value {
-    json!({
-        "schema_version": 1,
-        "target_id": target_id,
-        "session_id": session_id,
-        "prompt": "What does an immutable borrow permit in Rust?",
-        "cold_answer": "It permits reads without transferring ownership.",
-        "confidence": "sure",
-        "result": result,
-        "grading_notes": "The answer was graded by the review agent.",
-        "repair": {
-            "required": result != "correct",
-            "completed": false,
-            "correction": if result == "correct" { Value::Null } else { json!("An immutable borrow permits reads without transferring ownership.") },
-            "explanation": if result == "correct" { Value::Null } else { json!("The owner keeps ownership while the borrow exists.") },
-            "explain_back_prompt": Value::Null,
-            "explain_back_answer": Value::Null,
-        },
-    })
-}
-
-#[test]
-fn commands_work_outside_the_repository_with_env_or_flag_data_paths() {
-    let data_directory = data_directory();
-    let checked = assert_success(run(data_directory.path(), &["check"]));
-    assert_eq!(checked["target_count"], 3);
-
-    activate(data_directory.path(), "rust-borrow");
-    activate(data_directory.path(), "rust-lifetime");
-    activate(data_directory.path(), "sql-index");
-    let queued = assert_success(run(
-        data_directory.path(),
-        &["queue", "--at", "2026-09-02T12:00:00Z", "--limit", "2"],
-    ));
-    assert_eq!(queued["recommended_targets"][0]["target_id"], "rust-borrow");
-    assert_eq!(queued["recommended_targets"][1]["target_id"], "sql-index");
-
+fn command(data: &Path, args: &[&str]) -> (bool, Value) {
     let output = Command::new(binary())
-        .args([
-            "--data-dir",
-            data_directory.path().to_str().expect("UTF-8 path"),
-            "target",
-            "list",
-        ])
-        .env_remove("REPETO_DATA_DIR")
-        .current_dir("/tmp")
+        .args(["--data-dir", data.to_str().expect("UTF-8 path")])
+        .args(args)
         .output()
-        .expect("CLI process must run");
-    let listed = assert_success(output);
-    assert_eq!(
-        listed["targets"].as_array().expect("targets array").len(),
-        3
+        .expect("command starts");
+    let bytes = if output.status.success() {
+        &output.stdout
+    } else {
+        &output.stderr
+    };
+    (
+        output.status.success(),
+        serde_json::from_slice(bytes).expect("JSON output"),
+    )
+}
+fn assert_ok(data: &Path, args: &[&str]) -> Value {
+    let (success, value) = command(data, args);
+    assert!(success, "{value}");
+    value["data"].clone()
+}
+fn assert_error(data: &Path, args: &[&str], code: &str) {
+    let (success, value) = command(data, args);
+    assert!(!success, "{value}");
+    assert_eq!(value["error"]["code"], code);
+}
+fn setup() -> tempfile::TempDir {
+    let data = tempfile::tempdir().expect("temporary data directory");
+    let source_root = data.path().join("notes");
+    fs::create_dir_all(source_root.join("Cards")).expect("source directory");
+    fs::write(source_root.join("Cards/note.md"), "# Source").expect("source note");
+    let config = json!({"schema_version":1,"source_note_root":source_root,"desired_retention":0.9,"scheduler":{"implementation":"fsrs-rs","version":"6.6.2","parameters":fsrs_rs::DEFAULT_PARAMETERS.iter().map(|v| f64::from(*v)).collect::<Vec<_>>()},"fuzz_enabled":false,"default_recommended_target_count":3,"queue_priority_policy_version":1});
+    let target = json!({"schema_version":1,"id":"target","topic":"Rust","scope":"Ownership","retrieval_demand":{"kind":"explain","description":"Explain ownership."},"canonical_question":"What is ownership?","correct_answer_requirements":{"rule":"Names one ownership rule."},"source_notes":["Cards/note.md"]});
+    fs::create_dir(data.path().join("targets")).expect("target directory");
+    fs::write(
+        data.path().join("config.yaml"),
+        serde_yaml::to_string(&config).expect("config YAML"),
+    )
+    .expect("config");
+    fs::write(
+        data.path().join("targets/target.yaml"),
+        serde_yaml::to_string(&target).expect("target YAML"),
+    )
+    .expect("target");
+    fs::write(data.path().join("events.jsonl"), "").expect("events");
+    data
+}
+fn review(answer: bool, session: &str, occurred_at: &str) -> Value {
+    json!({"schema_version":1,"target_id":"target","session_id":session,"occurred_at":occurred_at,"assessment":{"answer_submitted":true,"target_knowledge_supplied_before_answer":false,"requirement_checks":{"rule":answer}},"confidence":"sure","metadata":{"prompt":"What is ownership?","answer":"A rule.","grading_explanation":"Graded.","verification_sources":["source-b","source-a"]}})
+}
+fn activate(data: &Path) {
+    assert_ok(
+        data,
+        &[
+            "target",
+            "activate",
+            "target",
+            "--at",
+            "2026-09-02T12:00:00.000Z",
+        ],
     );
+}
+fn write_review(data: &Path, value: &Value) -> String {
+    let path = data.join("review.json");
+    fs::write(&path, value.to_string()).expect("review input");
+    path.to_str().expect("UTF-8 path").to_owned()
+}
 
-    let shown = assert_success(run(
-        data_directory.path(),
-        &["target", "show", "rust-borrow"],
-    ));
-    assert_eq!(
-        shown["definition"]["source_notes"],
-        json!(["Cards/Rust Borrowing.md"])
+fn add_successor(data: &Path) {
+    let successor = json!({
+        "schema_version":1,
+        "id":"target.r2",
+        "replaces_target_id":"target",
+        "topic":"Rust",
+        "scope":"Ownership revision",
+        "retrieval_demand":{"kind":"explain","description":"Explain revised ownership."},
+        "canonical_question":"What is revised ownership?",
+        "correct_answer_requirements":{"rule":"Names one revised ownership rule."},
+        "source_notes":["Cards/note.md"]
+    });
+    fs::write(
+        data.join("targets/target.r2.yaml"),
+        serde_yaml::to_string(&successor).expect("successor YAML"),
+    )
+    .expect("successor target");
+}
+
+fn add_retired_target(data: &Path) {
+    let retired = json!({
+        "schema_version":1,"id":"retired","topic":"Rust","scope":"Retired scope",
+        "retrieval_demand":{"kind":"explain","description":"Explain retired scope."},
+        "canonical_question":"What is retired scope?",
+        "correct_answer_requirements":{"rule":"Names one retired rule."},
+        "source_notes":["Cards/note.md"]
+    });
+    fs::write(
+        data.join("targets/retired.yaml"),
+        serde_yaml::to_string(&retired).expect("retired YAML"),
+    )
+    .expect("retired target");
+}
+
+#[test]
+fn records_a_schema_valid_review_with_millisecond_due_time_and_exact_retry() {
+    let data = setup();
+    activate(data.path());
+    let input = write_review(
+        data.path(),
+        &review(true, "session", "2026-09-02T12:00:00.000Z"),
     );
+    let first = assert_ok(data.path(), &["review", "record", "--input", &input]);
+    assert_eq!(first["disposition"], "committed");
+    assert_eq!(first["event"]["payload"]["result"], "correct");
     assert_eq!(
-        shown["definition"]["verified_sources"],
-        json!(["https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"])
+        first["event"]["payload"]["scheduling"]["output"]["due_at"]
+            .as_str()
+            .expect("due time")
+            .rsplit_once('.')
+            .expect("millisecond separator")
+            .1,
+        "000Z"
+    );
+    let shown = assert_ok(data.path(), &["target", "show", "target"]);
+    assert_eq!(
+        shown["latest_verification_sources"],
+        json!(["source-a", "source-b"])
+    );
+    let before = fs::read(data.path().join("events.jsonl")).expect("event bytes");
+    fs::remove_file(data.path().join("notes/Cards/note.md")).expect("stale source note");
+    let retry = assert_ok(data.path(), &["review", "record", "--input", &input]);
+    assert_eq!(retry["disposition"], "retried");
+    assert_eq!(
+        fs::read(data.path().join("events.jsonl")).expect("event bytes"),
+        before
     );
 }
 
 #[test]
-fn lifecycle_and_review_commands_emit_stable_json_and_preserve_retry_behavior() {
-    let data_directory = data_directory();
-    assert_failure(
-        run(
-            data_directory.path(),
-            &["target", "pause", "rust-borrow", "--reason", "not ready"],
-        ),
-        "illegal_lifecycle_transition",
-    );
-    activate(data_directory.path(), "rust-borrow");
-    assert_success(run(
-        data_directory.path(),
-        &["target", "pause", "rust-borrow", "--reason", "travel"],
-    ));
-    assert_success(run(
-        data_directory.path(),
-        &["target", "resume", "rust-borrow", "--reason", "back"],
-    ));
+fn changed_review_identity_input_conflicts_and_no_answer_violations_use_schema_error() {
+    let changes: [fn(&mut Value); 4] = [
+        |value: &mut Value| value["occurred_at"] = json!("2026-09-03T12:00:00.000Z"),
+        |value: &mut Value| value["assessment"]["requirement_checks"]["rule"] = json!(false),
+        |value: &mut Value| value["confidence"] = json!("guessing"),
+        |value: &mut Value| value["metadata"]["answer"] = json!("Different answer."),
+    ];
+    for changed in changes {
+        let data = setup();
+        activate(data.path());
+        let path = write_review(
+            data.path(),
+            &review(true, "session", "2026-09-02T12:00:00.000Z"),
+        );
+        assert_ok(data.path(), &["review", "record", "--input", &path]);
+        let mut value = review(true, "session", "2026-09-02T12:00:00.000Z");
+        changed(&mut value);
+        fs::write(&path, value.to_string()).expect("changed review");
+        assert_error(
+            data.path(),
+            &["review", "record", "--input", &path],
+            "conflicting_review_retry",
+        );
+    }
 
-    let input_path = data_directory.path().join("review.json");
-    fs::write(
-        &input_path,
-        review_input("rust-borrow", "session-file", "correct").to_string(),
-    )
-    .expect("review input must write");
-    let first = assert_success(run(
-        data_directory.path(),
-        &[
-            "review",
-            "record",
-            "--input",
-            input_path.to_str().expect("UTF-8 path"),
-            "--at",
-            "2026-09-02T12:00:00Z",
-        ],
-    ));
-    assert_eq!(first["disposition"], "committed");
-    assert_success(run(
-        data_directory.path(),
-        &["target", "pause", "rust-borrow", "--reason", "travel again"],
-    ));
-    let retried = assert_success(run(
-        data_directory.path(),
-        &[
-            "review",
-            "record",
-            "--input",
-            input_path.to_str().expect("UTF-8 path"),
-            "--at",
-            "2026-09-02T12:00:00Z",
-        ],
-    ));
-    assert_eq!(retried["disposition"], "retried");
-    assert_success(run(
-        data_directory.path(),
-        &["target", "resume", "rust-borrow", "--reason", "ready again"],
-    ));
-    let mut conflicting_input = review_input("rust-borrow", "session-file", "correct");
-    conflicting_input["cold_answer"] = json!("Different cold answer.");
-    fs::write(&input_path, conflicting_input.to_string())
-        .expect("conflicting review input must write");
-    assert_failure(
-        run(
-            data_directory.path(),
-            &[
-                "review",
-                "record",
-                "--input",
-                input_path.to_str().expect("UTF-8 path"),
-                "--at",
-                "2026-09-02T12:00:00Z",
-            ],
-        ),
+    let data = setup();
+    activate(data.path());
+    let mut assisted = review(true, "assisted-session", "2026-09-02T12:00:00.000Z");
+    assisted["assessment"]["target_knowledge_supplied_before_answer"] = json!(true);
+    assisted
+        .as_object_mut()
+        .expect("review input object")
+        .remove("confidence");
+    let path = write_review(data.path(), &assisted);
+    assert_ok(data.path(), &["review", "record", "--input", &path]);
+    let mut independently_answered = assisted;
+    independently_answered["assessment"]["target_knowledge_supplied_before_answer"] = json!(false);
+    independently_answered["confidence"] = json!("sure");
+    fs::write(&path, independently_answered.to_string()).expect("changed confidence presence");
+    assert_error(
+        data.path(),
+        &["review", "record", "--input", &path],
         "conflicting_review_retry",
     );
 
-    let history = assert_success(run(
-        data_directory.path(),
-        &["target", "history", "rust-borrow"],
-    ));
-    assert_eq!(
-        history["reviews"].as_array().expect("reviews array").len(),
-        1
+    let data = setup();
+    activate(data.path());
+    let path = write_review(
+        data.path(),
+        &review(true, "session", "2026-09-02T12:00:00.000Z"),
     );
-    assert_carry_history_revision(data_directory.path());
-}
-
-fn assert_carry_history_revision(data_directory: &Path) {
-    write_target(
-        data_directory,
-        "rust-borrow.r2",
-        "Rust",
-        Some("rust-borrow"),
+    assert_ok(data.path(), &["review", "record", "--input", &path]);
+    let mut no_answer = review(false, "other", "2026-09-03T12:00:00.000Z");
+    no_answer["assessment"]["answer_submitted"] = json!(false);
+    no_answer["assessment"]["requirement_checks"]["rule"] = json!(true);
+    no_answer["metadata"]
+        .as_object_mut()
+        .expect("metadata")
+        .remove("answer");
+    no_answer
+        .as_object_mut()
+        .expect("input")
+        .remove("confidence");
+    let no_answer_path = write_review(data.path(), &no_answer);
+    assert_error(
+        data.path(),
+        &["review", "record", "--input", &no_answer_path],
+        "schema_validation_failed",
     );
-    assert_success(run(
-        data_directory,
-        &[
-            "target",
-            "revise",
-            "rust-borrow",
-            "rust-borrow.r2",
-            "--reason",
-            "narrow the retrieval demand",
-            "--carry-history",
-        ],
-    ));
-    let revised = assert_success(run(data_directory, &["target", "show", "rust-borrow.r2"]));
-    assert_eq!(revised["lifecycle"], "active");
-    let carried_history = assert_success(run(
-        data_directory,
-        &["target", "history", "rust-borrow.r2"],
-    ));
-    assert_eq!(
-        carried_history["reviews"]
-            .as_array()
-            .expect("reviews array")
-            .len(),
-        1
-    );
-    assert_success(run(
-        data_directory,
-        &["target", "retire", "rust-borrow.r2", "--reason", "complete"],
-    ));
 }
 
 #[test]
-fn review_record_accepts_standard_input_and_rejects_missing_data_directory() {
-    let data_directory = data_directory();
-    activate(data_directory.path(), "rust-borrow");
-    let mut child = Command::new(binary())
-        .args([
+fn review_record_has_no_clock_override_and_missing_data_directory_is_stable() {
+    let output = Command::new(binary())
+        .arg("check")
+        .output()
+        .expect("command starts");
+    assert!(!output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stderr).expect("JSON error")["error"]["code"],
+        "missing_data_directory"
+    );
+    let data = setup();
+    assert_error(
+        data.path(),
+        &[
             "review",
             "record",
             "--input",
             "-",
             "--at",
-            "2026-09-02T12:00:00Z",
-        ])
-        .env("REPETO_DATA_DIR", data_directory.path())
-        .current_dir("/")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("CLI process must start");
-    child
-        .stdin
-        .take()
-        .expect("standard input must be piped")
-        .write_all(
-            review_input("rust-borrow", "session-stdin", "correct")
-                .to_string()
-                .as_bytes(),
-        )
-        .expect("review input must write to standard input");
-    let output = child.wait_with_output().expect("CLI process must exit");
-    assert_eq!(assert_success(output)["disposition"], "committed");
-
-    let output = Command::new(binary())
-        .arg("check")
-        .env_remove("REPETO_DATA_DIR")
-        .current_dir("/")
-        .output()
-        .expect("CLI process must run");
-    assert_failure(output, "missing_data_directory");
+            "2026-09-02T12:00:00.000Z",
+        ],
+        "invalid_command",
+    );
 }
 
 #[test]
-fn fresh_revision_keeps_history_empty_and_fixed_time_queue_is_byte_stable() {
-    let data_directory = data_directory();
-    activate(data_directory.path(), "rust-borrow");
-    activate(data_directory.path(), "rust-lifetime");
-    let first_queue = run(
-        data_directory.path(),
-        &["queue", "--at", "2026-09-02T12:00:00Z"],
+fn revision_exact_retry_is_byte_stable_and_changed_identity_conflicts() {
+    let data = setup();
+    add_successor(data.path());
+    add_retired_target(data.path());
+    activate(data.path());
+    let args = [
+        "target",
+        "revise",
+        "target",
+        "target.r2",
+        "--reason",
+        "Clarify scope.",
+        "--carry-history",
+        "--at",
+        "2026-09-03T12:00:00.000Z",
+    ];
+    assert_eq!(assert_ok(data.path(), &args)["disposition"], "committed");
+    let bytes = fs::read(data.path().join("events.jsonl")).expect("event bytes");
+    fs::remove_file(data.path().join("notes/Cards/note.md")).expect("stale successor source");
+    assert_eq!(assert_ok(data.path(), &args)["disposition"], "retried");
+    assert_eq!(
+        fs::read(data.path().join("events.jsonl")).expect("event bytes"),
+        bytes
     );
-    let second_queue = run(
-        data_directory.path(),
-        &["queue", "--at", "2026-09-02T12:00:00Z"],
-    );
-    assert_eq!(first_queue.status, second_queue.status);
-    assert_eq!(first_queue.stdout, second_queue.stdout);
-    assert_success(first_queue);
-
-    write_target(
-        data_directory.path(),
-        "rust-lifetime.r2",
-        "Rust",
-        Some("rust-lifetime"),
-    );
-    assert_success(run(
-        data_directory.path(),
+    assert_error(
+        data.path(),
         &[
             "target",
             "revise",
-            "rust-lifetime",
-            "rust-lifetime.r2",
+            "target",
+            "target.r2",
             "--reason",
-            "make the scope testable",
+            "Other reason.",
+            "--carry-history",
+            "--at",
+            "2026-09-03T12:00:00.000Z",
         ],
-    ));
-    let history = assert_success(run(
-        data_directory.path(),
-        &["target", "history", "rust-lifetime.r2"],
-    ));
-    assert!(
-        history["reviews"]
-            .as_array()
-            .expect("reviews array")
-            .is_empty()
+        "revision_conflict",
+    );
+    assert_error(
+        data.path(),
+        &[
+            "target",
+            "revise",
+            "target",
+            "target.r2",
+            "--reason",
+            "Clarify scope.",
+            "--carry-history",
+            "--at",
+            "2026-09-03T12:00:01.000Z",
+        ],
+        "revision_conflict",
+    );
+    assert_error(
+        data.path(),
+        &[
+            "target",
+            "revise",
+            "target",
+            "target.r2",
+            "--reason",
+            "Clarify scope.",
+            "--at",
+            "2026-09-03T12:00:00.000Z",
+        ],
+        "revision_conflict",
     );
 }
 
 #[test]
-fn three_non_correct_reviews_set_needs_study_without_mutating_an_untouched_target() {
-    let data_directory = data_directory();
-    activate(data_directory.path(), "rust-borrow");
-    let untouched_before = assert_success(run(
-        data_directory.path(),
-        &["target", "history", "sql-index"],
-    ));
-    for (session_id, at) in [
-        ("session-1", "2026-09-02T12:00:00Z"),
-        ("session-2", "2026-09-03T12:00:00Z"),
-        ("session-3", "2026-09-04T12:00:00Z"),
-    ] {
-        let input_path = data_directory.path().join(format!("{session_id}.json"));
-        fs::write(
-            &input_path,
-            review_input("rust-borrow", session_id, "incorrect").to_string(),
-        )
-        .expect("review input must write");
-        assert_success(run(
-            data_directory.path(),
-            &[
-                "review",
-                "record",
-                "--input",
-                input_path.to_str().expect("UTF-8 path"),
-                "--at",
-                at,
-            ],
-        ));
-    }
-    let reviewed = assert_success(run(
-        data_directory.path(),
-        &["target", "show", "rust-borrow"],
-    ));
-    assert_eq!(reviewed["needs_study"], true);
-    assert_eq!(reviewed["consecutive_non_correct"], 3);
-    let untouched_after = assert_success(run(
-        data_directory.path(),
-        &["target", "history", "sql-index"],
-    ));
-    assert_eq!(untouched_before, untouched_after);
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end test proves the source-path repair boundary"
+)]
+fn check_aggregates_all_stale_sources_while_structural_and_repair_paths_remain_available() {
+    let data = setup();
+    add_successor(data.path());
+    add_retired_target(data.path());
+    activate(data.path());
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "pause",
+            "target",
+            "--reason",
+            "Repair test.",
+            "--at",
+            "2026-09-03T12:00:00.000Z",
+        ],
+    );
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "activate",
+            "retired",
+            "--at",
+            "2026-09-03T12:00:00.000Z",
+        ],
+    );
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "retire",
+            "retired",
+            "--reason",
+            "Retire source-check fixture.",
+            "--at",
+            "2026-09-03T12:01:00.000Z",
+        ],
+    );
+    let mut stale_successor: Value = serde_yaml::from_str(
+        &fs::read_to_string(data.path().join("targets/target.r2.yaml")).expect("successor"),
+    )
+    .expect("successor JSON");
+    stale_successor["source_notes"] = json!(["Cards/missing-successor.md"]);
+    fs::write(
+        data.path().join("targets/target.r2.yaml"),
+        serde_yaml::to_string(&stale_successor).expect("successor YAML"),
+    )
+    .expect("stale successor");
+    fs::remove_file(data.path().join("notes/Cards/note.md")).expect("stale original");
+
+    let (success, check) = command(data.path(), &["check"]);
+    assert!(!success, "{check}");
+    assert_eq!(check["error"]["code"], "invalid_source_note_path");
+    assert_eq!(
+        check["error"]["details"]["failures"]
+            .as_array()
+            .expect("aggregated failures")
+            .len(),
+        3
+    );
+    assert_ok(data.path(), &["target", "list"]);
+    assert_ok(data.path(), &["target", "history", "target"]);
+    assert_error(
+        data.path(),
+        &[
+            "target",
+            "activate",
+            "target.r2",
+            "--at",
+            "2026-09-04T12:00:00.000Z",
+        ],
+        "invalid_source_note_path",
+    );
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "resume",
+            "target",
+            "--reason",
+            "Check stale review prep.",
+            "--at",
+            "2026-09-04T12:00:00.000Z",
+        ],
+    );
+    let blocked_review = write_review(
+        data.path(),
+        &review(false, "stale-source", "2026-09-04T12:00:00.000Z"),
+    );
+    assert_error(
+        data.path(),
+        &["review", "record", "--input", &blocked_review],
+        "invalid_source_note_path",
+    );
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "pause",
+            "target",
+            "--reason",
+            "Return to paused repair state.",
+            "--at",
+            "2026-09-04T12:01:00.000Z",
+        ],
+    );
+
+    // A stale predecessor does not deadlock a repair revision when its
+    // replacement definition has valid sources.
+    stale_successor["source_notes"] = json!(["Cards/successor.md"]);
+    fs::write(data.path().join("notes/Cards/successor.md"), "# Successor").expect("successor note");
+    fs::write(
+        data.path().join("targets/target.r2.yaml"),
+        serde_yaml::to_string(&stale_successor).expect("successor YAML"),
+    )
+    .expect("repaired successor");
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "revise",
+            "target",
+            "target.r2",
+            "--reason",
+            "Repair stale predecessor.",
+            "--at",
+            "2026-09-04T12:00:00.000Z",
+        ],
+    );
+    assert_eq!(
+        assert_ok(data.path(), &["target", "show", "target.r2"])["lifecycle"],
+        "paused"
+    );
 }
 
 #[test]
-fn malformed_command_is_a_json_error_with_the_stable_exit_code() {
-    let output = Command::new(binary())
-        .arg("not-a-command")
-        .current_dir("/")
-        .output()
-        .expect("CLI process must run");
-    assert_eq!(output.status.code(), Some(2));
-    assert_failure(output, "invalid_command");
+fn review_streak_and_carried_history_are_replayed_and_duplicate_sessions_reject() {
+    let data = setup();
+    add_successor(data.path());
+    activate(data.path());
+    for (index, at) in [
+        "2026-09-02T12:00:00.000Z",
+        "2026-09-03T12:00:00.000Z",
+        "2026-09-04T12:00:00.000Z",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let input = write_review(data.path(), &review(false, &format!("session-{index}"), at));
+        assert_ok(data.path(), &["review", "record", "--input", &input]);
+    }
+    let original = assert_ok(data.path(), &["target", "show", "target"]);
+    assert_eq!(original["needs_study"], true);
+    assert_eq!(original["consecutive_non_correct"], 3);
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "revise",
+            "target",
+            "target.r2",
+            "--reason",
+            "Carry history.",
+            "--carry-history",
+            "--at",
+            "2026-09-05T12:00:00.000Z",
+        ],
+    );
+    let successor = assert_ok(data.path(), &["target", "show", "target.r2"]);
+    assert_eq!(successor["needs_study"], true);
+    assert_eq!(successor["consecutive_non_correct"], 3);
+    let mut carried_retry = review(false, "session-0", "2026-09-05T12:00:00.000Z");
+    carried_retry["target_id"] = json!("target.r2");
+    let carried_retry = write_review(data.path(), &carried_retry);
+    assert_error(
+        data.path(),
+        &["review", "record", "--input", &carried_retry],
+        "duplicate_effective_review_session",
+    );
+
+    let mut copied = fs::read_to_string(data.path().join("events.jsonl"))
+        .expect("event history")
+        .lines()
+        .nth(1)
+        .map(|line| serde_json::from_str::<Value>(line).expect("review event"))
+        .expect("first review");
+    copied["sequence"] = json!(6);
+    copied["target_id"] = json!("target.r2");
+    let mut bytes = fs::read_to_string(data.path().join("events.jsonl")).expect("event history");
+    bytes.push_str(&copied.to_string());
+    bytes.push('\n');
+    fs::write(data.path().join("events.jsonl"), bytes).expect("injected event");
+    let catalogue = load_catalogue(data.path()).expect("structural load");
+    assert_eq!(
+        replay(&catalogue)
+            .expect_err("duplicate effective carried session")
+            .code,
+        "duplicate_effective_review_session"
+    );
+}
+
+#[test]
+fn correct_review_resets_needs_study_and_lifecycle_rejects_invalid_transition() {
+    let data = setup();
+    assert_error(
+        data.path(),
+        &[
+            "target",
+            "pause",
+            "target",
+            "--reason",
+            "Not active.",
+            "--at",
+            "2026-09-02T12:00:00.000Z",
+        ],
+        "illegal_lifecycle_transition",
+    );
+    activate(data.path());
+    for (index, at) in [
+        "2026-09-02T12:00:00.000Z",
+        "2026-09-03T12:00:00.000Z",
+        "2026-09-04T12:00:00.000Z",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let input = write_review(data.path(), &review(false, &format!("bad-{index}"), at));
+        assert_ok(data.path(), &["review", "record", "--input", &input]);
+    }
+    let reset = write_review(
+        data.path(),
+        &review(true, "good", "2026-09-05T12:00:00.000Z"),
+    );
+    assert_ok(data.path(), &["review", "record", "--input", &reset]);
+    let shown = assert_ok(data.path(), &["target", "show", "target"]);
+    assert_eq!(shown["needs_study"], false);
+    assert_eq!(shown["consecutive_non_correct"], 0);
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "pause",
+            "target",
+            "--reason",
+            "Valid pause.",
+            "--at",
+            "2026-09-06T12:00:00.000Z",
+        ],
+    );
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "resume",
+            "target",
+            "--reason",
+            "Valid resume.",
+            "--at",
+            "2026-09-06T12:01:00.000Z",
+        ],
+    );
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "retire",
+            "target",
+            "--reason",
+            "Valid retirement.",
+            "--at",
+            "2026-09-06T12:02:00.000Z",
+        ],
+    );
+    assert_eq!(
+        assert_ok(data.path(), &["target", "show", "target"])["lifecycle"],
+        "retired"
+    );
+}
+
+#[test]
+fn replay_rejects_an_assessment_result_that_the_policy_did_not_derive() {
+    let data = setup();
+    activate(data.path());
+    let input = write_review(
+        data.path(),
+        &review(true, "derived-result", "2026-09-02T12:00:00.000Z"),
+    );
+    assert_ok(data.path(), &["review", "record", "--input", &input]);
+    let mut event: Value = fs::read_to_string(data.path().join("events.jsonl"))
+        .expect("event history")
+        .lines()
+        .nth(1)
+        .map(|line| serde_json::from_str(line).expect("review event"))
+        .expect("review event");
+    event["payload"]["result"] = json!("not_correct");
+    let activation = fs::read_to_string(data.path().join("events.jsonl"))
+        .expect("event history")
+        .lines()
+        .next()
+        .expect("activation")
+        .to_owned();
+    fs::write(
+        data.path().join("events.jsonl"),
+        format!("{activation}\n{event}\n"),
+    )
+    .expect("tampered history");
+    assert_eq!(
+        replay(&load_catalogue(data.path()).expect("structural load"))
+            .expect_err("assessment result mismatch")
+            .code,
+        "stored_assessment_result_mismatch"
+    );
+}
+
+#[test]
+fn replay_recomputes_scheduler_integrity_without_rewriting_stored_output() {
+    let mutations: [EventMutation; 6] = [
+        (
+            |event| event["payload"]["scheduling"]["scheduler"]["parameters"][0] = json!(0.0),
+            "stored_scheduling_mismatch",
+        ),
+        (
+            |event| event["payload"]["scheduling"]["input"]["desired_retention"] = json!(0.8),
+            "stored_scheduling_mismatch",
+        ),
+        (
+            |event| event["payload"]["scheduling"]["input"]["rating"] = json!("Again"),
+            "stored_scheduling_mismatch",
+        ),
+        (
+            |event| event["payload"]["scheduling"]["input"]["elapsed_days"] = json!(1),
+            "replay_elapsed_days_mismatch",
+        ),
+        (
+            |event| event["payload"]["scheduling"]["output"]["interval_days"] = json!(99),
+            "stored_scheduling_mismatch",
+        ),
+        (
+            |event| {
+                event["payload"]["scheduling"]["output"]["memory_state"]["stability"] = json!(0.0);
+            },
+            "stored_scheduling_mismatch",
+        ),
+    ];
+    for (index, (mutation, expected_code)) in mutations.into_iter().enumerate() {
+        let data = setup();
+        activate(data.path());
+        let input = write_review(
+            data.path(),
+            &review(true, "scheduler-replay", "2026-09-02T12:00:00.000Z"),
+        );
+        assert_ok(data.path(), &["review", "record", "--input", &input]);
+        let lines = fs::read_to_string(data.path().join("events.jsonl")).expect("event history");
+        let activation = lines.lines().next().expect("activation");
+        let mut event: Value =
+            serde_json::from_str(lines.lines().nth(1).expect("review")).expect("review event");
+        mutation(&mut event);
+        fs::write(
+            data.path().join("events.jsonl"),
+            format!("{activation}\n{event}\n"),
+        )
+        .expect("tampered history");
+        let error = replay(&load_catalogue(data.path()).expect("structural load"))
+            .expect_err("scheduler integrity");
+        assert_eq!(error.code, expected_code);
+        if index == 0 {
+            assert_eq!(error.details, json!({ "field": "scheduler.parameters" }));
+        }
+    }
 }

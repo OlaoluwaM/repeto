@@ -1,6 +1,7 @@
 //! Command implementations over validated study data.
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{self, Read},
     num::NonZeroUsize,
@@ -14,8 +15,12 @@ use repeto::{
     },
     queue::{QueueRequest, QueueTarget, build_queue},
     scheduler::{LatestReview, ScheduleRequest, Scheduler},
-    validation::{Catalogue, load_catalogue, parse_review_record_input},
+    validation::{
+        Catalogue, TargetFile, load_catalogue, parse_json, parse_review_record_input, parse_yaml,
+        validate_review_input_for_target, validate_source_note_paths,
+    },
 };
+use repeto_assessment::{Assessment, AssessmentResult, POLICY_ID, derive_result};
 use serde_json::{Value, json};
 
 use crate::cli::{CliError, Command, ReviewCommand, TargetCommand};
@@ -38,13 +43,14 @@ pub fn execute(command: Command, data_directory: &Path) -> Result<Value, CliErro
         Command::Target { command } => target(data_directory, command),
         Command::Review {
             command: ReviewCommand::Record(arguments),
-        } => review_record(data_directory, &arguments.input, arguments.at.as_deref()),
+        } => review_record(data_directory, &arguments.input),
     }
 }
 
 fn check(data_directory: &Path) -> Result<Value, CliError> {
     let catalogue = load(data_directory)?;
     let state = replay_catalogue(&catalogue)?;
+    validate_sources(&catalogue, catalogue.targets.keys().map(String::as_str))?;
     Ok(json!({
         "data_directory": data_directory,
         "target_count": catalogue.targets.len(),
@@ -115,6 +121,7 @@ fn target(data_directory: &Path, command: TargetCommand) -> Result<Value, CliErr
         TargetCommand::Activate(arguments) => {
             let occurred_at = crate::clock::resolve(arguments.at.as_deref())?;
             lifecycle_write(data_directory, move |catalogue, _| {
+                validate_sources(catalogue, std::iter::once(arguments.id.as_str()))?;
                 let kind = EventRequestKind::Activation {
                     definition: definition_value(catalogue, &arguments.id)?,
                 };
@@ -159,7 +166,16 @@ fn target(data_directory: &Path, command: TargetCommand) -> Result<Value, CliErr
         }
         TargetCommand::Revise(arguments) => {
             let occurred_at = crate::clock::resolve(arguments.at.as_deref())?;
-            lifecycle_write(data_directory, move |catalogue, _| {
+            lifecycle_write(data_directory, move |catalogue, state| {
+                // External source paths gate creating a revision, not resolving
+                // the immutable retry key of one already committed.
+                if state
+                    .target(&arguments.new_id)
+                    .map_or(LifecycleState::Draft, |target| target.lifecycle)
+                    == LifecycleState::Draft
+                {
+                    validate_sources(catalogue, std::iter::once(arguments.new_id.as_str()))?;
+                }
                 let kind = EventRequestKind::Revision {
                     new_target_id: arguments.new_id.clone(),
                     reason: arguments.reason,
@@ -196,12 +212,20 @@ fn target_show(data_directory: &Path, id: &str) -> Result<Value, CliError> {
     let state = replay_catalogue(&catalogue)?;
     let definition = definition_value(&catalogue, id)?;
     let target = state.target(id).ok_or_else(|| unknown_target(id))?;
+    validate_sources(&catalogue, std::iter::once(id))?;
+    let latest_verification_sources = target
+        .latest_review
+        .as_ref()
+        .and_then(|review| review.payload.get("metadata"))
+        .and_then(|metadata| metadata.get("verification_sources"))
+        .cloned();
     Ok(json!({
         "definition": definition,
         "lifecycle": lifecycle_name(target.lifecycle),
         "needs_study": target.needs_study,
         "consecutive_non_correct": target.consecutive_non_correct,
         "carried_from_target_id": target.carried_from_target_id,
+        "latest_verification_sources": latest_verification_sources,
     }))
 }
 
@@ -235,15 +259,15 @@ where
     serialize(outcome)
 }
 
-fn review_record(
-    data_directory: &Path,
-    input_path: &str,
-    at: Option<&str>,
-) -> Result<Value, CliError> {
+fn review_record(data_directory: &Path, input_path: &str) -> Result<Value, CliError> {
     let input = read_review_input(input_path)?;
-    let review_input =
-        parse_review_record_input(&input.contents, input.is_yaml).map_err(CliError::from)?;
-    let review_value = serialize(review_input)?;
+    parse_review_record_input(&input.contents, input.is_yaml).map_err(CliError::from)?;
+    let review_value = if input.is_yaml {
+        parse_yaml(&input.contents)
+    } else {
+        parse_json(&input.contents)
+    }
+    .map_err(CliError::from)?;
     let target_id = review_value
         .get("target_id")
         .and_then(Value::as_str)
@@ -255,30 +279,59 @@ fn review_record(
             )
         })?
         .to_owned();
-    let reviewed_at = crate::clock::resolve(at)?;
-    let result = serde_json::from_value(review_value.get("result").cloned().ok_or_else(|| {
-        CliError::new(
-            "invalid_review_input",
-            "review input has no result",
-            Value::Null,
-        )
-    })?)
-    .map_err(|error| {
-        CliError::new(
-            "invalid_review_input",
-            "review result is invalid",
-            json!({ "error": error.to_string() }),
-        )
-    })?;
+    let reviewed_at = review_value
+        .get("occurred_at")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            CliError::new(
+                "invalid_review_input",
+                "review input has no occurred_at",
+                Value::Null,
+            )
+        })?
+        .parse::<chrono::DateTime<chrono::Utc>>()
+        .map_err(|error| {
+            CliError::new(
+                "invalid_review_input",
+                "review input occurred_at is invalid",
+                json!({ "error": error.to_string() }),
+            )
+        })?;
     lifecycle_write(data_directory, move |catalogue, state| {
         let target = state
             .target(&target_id)
             .ok_or_else(|| unknown_target(&target_id))?;
+        // Equality is over complete, validated caller-owned input, including a
+        // retry.  Source-path existence is deliberately checked only when a
+        // new review will be scheduled: an exact retry remains stable if an
+        // external note later moves or is repaired.
+        validate_review_input_for_target(&review_value, &definition_value(catalogue, &target_id)?)
+            .map_err(CliError::from)?;
         let payload = if let Some(existing) = target.reviews.iter().find(|review| {
             review.payload.get("session_id").and_then(Value::as_str)
                 == review_value.get("session_id").and_then(Value::as_str)
         }) {
-            retry_payload(review_value.clone(), &existing.payload)?
+            review_payload(
+                review_value.clone(),
+                existing
+                    .payload
+                    .get("result")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        CliError::new(
+                            "invalid_replayed_review",
+                            "stored review has no result",
+                            Value::Null,
+                        )
+                    })?,
+                existing.payload.get("scheduling").cloned().ok_or_else(|| {
+                    CliError::new(
+                        "invalid_replayed_review",
+                        "stored review has no scheduling object",
+                        Value::Null,
+                    )
+                })?,
+            )?
         } else {
             if target.lifecycle != LifecycleState::Active {
                 return Err(CliError::new(
@@ -287,15 +340,17 @@ fn review_record(
                     json!({ "target_id": target_id, "lifecycle": lifecycle_name(target.lifecycle) }),
                 ));
             }
+            validate_sources(catalogue, std::iter::once(target_id.as_str()))?;
             let prior = latest_review(state, &target_id)?;
+            let result = derive_review_result(catalogue, &target_id, &review_value)?;
             let scheduler = Scheduler::from_configuration(&catalogue.configuration)?;
-            let decision = scheduler.schedule(&ScheduleRequest {
+            let scheduling = scheduler.schedule(&ScheduleRequest {
                 prior_memory_state: prior.as_ref().map(|review| review.memory_state.clone()),
                 prior_reviewed_at: prior.as_ref().map(|review| review.reviewed_at),
                 reviewed_at,
-                result,
+                result: result.clone(),
             })?;
-            review_payload(review_value, &serialize(decision)?)?
+            review_payload(review_value, &result, scheduling)?
         };
         Ok(EventRequest::new(
             target_id,
@@ -340,7 +395,7 @@ fn read_review_input(path: &str) -> Result<ReviewInput, CliError> {
     Ok(ReviewInput { contents, is_yaml })
 }
 
-fn review_payload(mut input: Value, decision: &Value) -> Result<Value, CliError> {
+fn review_payload(mut input: Value, result: &str, scheduling: Value) -> Result<Value, CliError> {
     let object = input.as_object_mut().ok_or_else(|| {
         CliError::new(
             "invalid_review_input",
@@ -350,51 +405,118 @@ fn review_payload(mut input: Value, decision: &Value) -> Result<Value, CliError>
     })?;
     object.remove("schema_version");
     object.remove("target_id");
+    object.remove("occurred_at");
+    canonicalize_verification_sources(object)?;
     let mut payload = std::mem::take(object);
-    let decision = decision.as_object().ok_or_else(|| {
-        CliError::new(
-            "scheduler_serialization_error",
-            "scheduler output must be a JSON object",
-            Value::Null,
-        )
-    })?;
-    let rating = decision
-        .get("scheduling_input")
-        .and_then(|input| input.get("rating"))
-        .cloned()
-        .ok_or_else(|| {
-            CliError::new(
-                "scheduler_serialization_error",
-                "scheduler output has no rating",
-                Value::Null,
-            )
-        })?;
-    payload.insert("fsrs_rating".to_owned(), rating);
-    payload.extend(decision.clone());
+    payload.insert("assessment_policy_id".to_owned(), json!(POLICY_ID));
+    payload.insert("result".to_owned(), json!(result));
+    payload.insert("scheduling".to_owned(), scheduling);
     Ok(Value::Object(payload))
 }
 
-fn retry_payload(input: Value, stored_payload: &Value) -> Result<Value, CliError> {
-    const SCHEDULING_FIELDS: [&str; 6] = [
-        "fsrs_rating",
-        "scheduler_version",
-        "parameter_set",
-        "scheduling_input",
-        "scheduling_output",
-        "next_due_at",
-    ];
-    let mut decision = serde_json::Map::new();
-    for field in SCHEDULING_FIELDS {
-        let value = stored_payload.get(field).cloned().ok_or_else(|| {
+fn canonicalize_verification_sources(
+    input: &mut serde_json::Map<String, Value>,
+) -> Result<(), CliError> {
+    let sources = input
+        .get_mut("metadata")
+        .and_then(Value::as_object_mut)
+        .and_then(|metadata| metadata.get_mut("verification_sources"))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| {
             CliError::new(
-                "invalid_replayed_review",
-                "stored review has incomplete scheduling data",
-                json!({ "field": field }),
+                "invalid_review_input",
+                "review input metadata has no verification sources",
+                Value::Null,
             )
         })?;
-        decision.insert(field.to_owned(), value);
+    let canonical = sources
+        .iter()
+        .map(|source| {
+            source.as_str().map(str::to_owned).ok_or_else(|| {
+                CliError::new(
+                    "invalid_review_input",
+                    "review input verification sources are invalid",
+                    Value::Null,
+                )
+            })
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    *sources = canonical.into_iter().map(Value::String).collect();
+    Ok(())
+}
+
+fn derive_review_result(
+    catalogue: &Catalogue,
+    target_id: &str,
+    input: &Value,
+) -> Result<String, CliError> {
+    let definition = catalogue
+        .targets
+        .get(target_id)
+        .ok_or_else(|| unknown_target(target_id))?;
+    let expected = definition
+        .correct_answer_requirements
+        .iter()
+        .map(|(id, description)| (id.to_string(), description.to_string()))
+        .collect::<BTreeMap<_, _>>();
+    let assessment_value = input.get("assessment").ok_or_else(|| {
+        CliError::new(
+            "invalid_review_input",
+            "review input has no assessment",
+            Value::Null,
+        )
+    })?;
+    let answer_submitted = assessment_value
+        .get("answer_submitted")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            CliError::new(
+                "invalid_review_input",
+                "assessment has no answer_submitted",
+                Value::Null,
+            )
+        })?;
+    let assisted = assessment_value
+        .get("target_knowledge_supplied_before_answer")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            CliError::new(
+                "invalid_review_input",
+                "assessment has no assistance flag",
+                Value::Null,
+            )
+        })?;
+    let checks: BTreeMap<String, bool> = serde_json::from_value(
+        assessment_value
+            .get("requirement_checks")
+            .cloned()
+            .ok_or_else(|| {
+                CliError::new(
+                    "invalid_review_input",
+                    "assessment has no requirement checks",
+                    Value::Null,
+                )
+            })?,
+    )
+    .map_err(|error| {
+        CliError::new(
+            "invalid_review_input",
+            "requirement checks are invalid",
+            json!({ "error": error.to_string() }),
+        )
+    })?;
+    match derive_result(
+        &expected,
+        &Assessment::new(answer_submitted, assisted, checks),
+    ) {
+        Ok(AssessmentResult::Correct) => Ok("correct".to_owned()),
+        Ok(AssessmentResult::NotCorrect) => Ok("not_correct".to_owned()),
+        Err(error) => Err(CliError::new(
+            error.code(),
+            "assessment requirement keys do not match the target",
+            json!({ "requirement_id": error.requirement_id() }),
+        )),
     }
-    review_payload(input, &Value::Object(decision))
 }
 
 fn latest_review(state: &DerivedStudyState, id: &str) -> Result<Option<LatestReview>, CliError> {
@@ -404,13 +526,17 @@ fn latest_review(state: &DerivedStudyState, id: &str) -> Result<Option<LatestRev
     else {
         return Ok(None);
     };
-    let output = review.payload.get("scheduling_output").ok_or_else(|| {
-        CliError::new(
-            "invalid_replayed_review",
-            "latest review has no scheduling output",
-            json!({ "target_id": id }),
-        )
-    })?;
+    let output = review
+        .payload
+        .get("scheduling")
+        .and_then(|scheduling| scheduling.get("output"))
+        .ok_or_else(|| {
+            CliError::new(
+                "invalid_replayed_review",
+                "latest review has no scheduling output",
+                json!({ "target_id": id }),
+            )
+        })?;
     Ok(Some(LatestReview {
         memory_state: serde_json::from_value(output.get("memory_state").cloned().ok_or_else(
             || {
@@ -443,41 +569,51 @@ fn latest_review(state: &DerivedStudyState, id: &str) -> Result<Option<LatestRev
                 json!({ "error": error.to_string() }),
             )
         })?,
-        confidence: serde_json::from_value(review.payload.get("confidence").cloned().ok_or_else(
-            || {
+        confidence: review
+            .payload
+            .get("confidence")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        result: review
+            .payload
+            .get("result")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
                 CliError::new(
                     "invalid_replayed_review",
-                    "latest review has no confidence",
+                    "latest review has no result",
                     json!({ "target_id": id }),
                 )
-            },
-        )?)
-        .map_err(|error| {
-            CliError::new(
-                "invalid_replayed_review",
-                "latest review confidence is invalid",
-                json!({ "error": error.to_string() }),
-            )
-        })?,
-        result: serde_json::from_value(review.payload.get("result").cloned().ok_or_else(|| {
-            CliError::new(
-                "invalid_replayed_review",
-                "latest review has no result",
-                json!({ "target_id": id }),
-            )
-        })?)
-        .map_err(|error| {
-            CliError::new(
-                "invalid_replayed_review",
-                "latest review result is invalid",
-                json!({ "error": error.to_string() }),
-            )
-        })?,
+            })?
+            .to_owned(),
     }))
 }
 
 fn load(data_directory: &Path) -> Result<Catalogue, CliError> {
     load_catalogue(data_directory).map_err(CliError::from)
+}
+
+fn validate_sources<'a>(
+    catalogue: &Catalogue,
+    ids: impl IntoIterator<Item = &'a str>,
+) -> Result<(), CliError> {
+    let configuration = serialize(&catalogue.configuration)?;
+    let targets = ids
+        .into_iter()
+        .map(|id| {
+            catalogue
+                .targets
+                .get(id)
+                .ok_or_else(|| unknown_target(id))
+                .and_then(|definition| {
+                    Ok(TargetFile {
+                        path: std::path::PathBuf::from(format!("{id}.yaml")),
+                        document: serialize(definition)?,
+                    })
+                })
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+    validate_source_note_paths(&configuration, &targets).map_err(CliError::from)
 }
 
 fn replay_catalogue(catalogue: &Catalogue) -> Result<DerivedStudyState, CliError> {

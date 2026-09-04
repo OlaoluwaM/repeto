@@ -1,320 +1,257 @@
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use repeto::{
-    domain::{
-        RepetoConfiguration, RepetoEvent,
-        generated::{
-            MemoryState, RepetoEventPayload, RepetoReviewRecordInputResult, SchedulingInputRating,
-        },
-    },
-    scheduler::{ScheduleRequest, Scheduler, SchedulingDecision, rating_for_result},
+    domain::RepetoConfiguration,
+    scheduler::{ScheduleRequest, Scheduler},
     validation::{SchemaKind, parse_document},
 };
-use serde_json::{Value, json};
+use serde_json::json;
 
 fn configuration() -> RepetoConfiguration {
-    let parameters = fsrs_rs::DEFAULT_PARAMETERS
-        .iter()
-        .map(|parameter| Value::from(f64::from(*parameter)))
-        .collect::<Vec<_>>();
-    parse_document(
-        SchemaKind::Configuration,
-        json!({
-            "schema_version": 1,
-            "desired_retention": 0.9,
-            "scheduler": {
-                "implementation": "fsrs-rs",
-                "version": "6.6.2",
-                "parameters": parameters
-            },
-            "fuzz_enabled": false,
-            "default_recommended_target_count": 3,
-            "queue_priority_policy_version": 1
-        }),
-    )
-    .expect("test configuration must pass the schema")
+    parse_document(SchemaKind::Configuration, json!({"schema_version":1,"source_note_root":"/tmp","desired_retention":0.9,"scheduler":{"implementation":"fsrs-rs","version":"6.6.2","parameters":fsrs_rs::DEFAULT_PARAMETERS.iter().map(|value| f64::from(*value)).collect::<Vec<_>>()},"fuzz_enabled":false,"default_recommended_target_count":3,"queue_priority_policy_version":1})).expect("valid configuration")
+}
+fn time() -> DateTime<Utc> {
+    "2026-09-02T12:00:00.000Z".parse().expect("valid time")
 }
 
-fn unchecked_configuration() -> RepetoConfiguration {
-    serde_json::from_value(serde_json::to_value(configuration()).unwrap())
-        .expect("generated configuration type must deserialize")
+fn payload(result: &str, scheduling: &serde_json::Value) -> serde_json::Value {
+    json!({
+        "session_id":"session",
+        "assessment":{"answer_submitted":true,"target_knowledge_supplied_before_answer":false,"requirement_checks":{"rule":result == "correct"}},
+        "confidence":"sure",
+        "metadata":{"prompt":"Prompt","answer":"Answer","grading_explanation":"Grade","verification_sources":["source"]},
+        "assessment_policy_id":"repeto-analytic-conjunctive-v1",
+        "result":result,
+        "scheduling":scheduling
+    })
 }
 
-fn timestamp(value: &str) -> DateTime<Utc> {
-    value.parse().expect("test timestamp must be valid")
-}
-
-fn assert_close(actual: f64, expected: f64) {
-    assert!(
-        (actual - expected).abs() < 0.000_001,
-        "expected {expected}, got {actual}"
-    );
-}
-
-fn correct_decision() -> (Scheduler, DateTime<Utc>, SchedulingDecision) {
-    let scheduler = Scheduler::from_configuration(&configuration()).unwrap();
-    let reviewed_at = timestamp("2026-09-02T12:00:00Z");
-    let decision = scheduler
+#[test]
+fn stores_one_closed_f32_canonical_scheduling_object() {
+    let scheduling = Scheduler::from_configuration(&configuration())
+        .expect("scheduler")
         .schedule(&ScheduleRequest {
             prior_memory_state: None,
             prior_reviewed_at: None,
-            reviewed_at,
-            result: RepetoReviewRecordInputResult::Correct,
+            reviewed_at: time(),
+            result: "correct".to_owned(),
         })
-        .unwrap();
-    (scheduler, reviewed_at, decision)
-}
-
-fn stored_payload(decision: &SchedulingDecision) -> RepetoEventPayload {
-    let decision = serde_json::to_value(decision).unwrap();
-    let event: RepetoEvent = parse_document(
-        SchemaKind::Event,
-        json!({
-            "schema_version": 1,
-            "sequence": 1,
-            "event_type": "review_completed",
-            "occurred_at": "2026-09-02T12:00:00Z",
-            "target_id": "test-target",
-            "payload": {
-                "session_id": "test-session",
-                "prompt": "Test prompt",
-                "cold_answer": "Test answer",
-                "confidence": "sure",
-                "result": "correct",
-                "grading_notes": "Test grading.",
-                "repair": {
-                    "required": false,
-                    "completed": false,
-                    "correction": null,
-                    "explanation": null,
-                    "explain_back_prompt": null,
-                    "explain_back_answer": null
-                },
-                "fsrs_rating": "Good",
-                "scheduler_version": decision["scheduler_version"].clone(),
-                "parameter_set": decision["parameter_set"].clone(),
-                "scheduling_input": decision["scheduling_input"].clone(),
-                "scheduling_output": decision["scheduling_output"].clone(),
-                "next_due_at": decision["next_due_at"].clone()
-            }
-        }),
-    )
-    .expect("generated decision must produce a schema-valid event");
-    event.payload
-}
-
-fn payload_from_value(value: Value) -> RepetoEventPayload {
-    serde_json::from_value(value).expect("tampered payload must remain schema-shaped")
+        .expect("schedule");
+    assert_eq!(scheduling["input"]["rating"], "Good");
+    assert_eq!(
+        scheduling["input"]["desired_retention"],
+        json!(0.899_999_976_158_142_1_f64)
+    );
+    assert!(scheduling.get("next_due_at").is_none());
+    assert!(scheduling.get("fsrs_rating").is_none());
+    let payload = json!({"session_id":"session","assessment":{"answer_submitted":true,"target_knowledge_supplied_before_answer":false,"requirement_checks":{"rule":true}},"confidence":"sure","metadata":{"prompt":"Prompt","answer":"Answer","grading_explanation":"Correct","verification_sources":["source"]},"assessment_policy_id":"repeto-analytic-conjunctive-v1","result":"correct","scheduling":scheduling});
+    Scheduler::from_configuration(&configuration())
+        .expect("scheduler")
+        .validate_stored_review(time(), &payload)
+        .expect("stored decision validates");
 }
 
 #[test]
-fn maps_only_correct_to_good() {
+fn maps_not_correct_to_again_and_rejects_tampered_exact_bits() {
+    let scheduler = Scheduler::from_configuration(&configuration()).expect("scheduler");
+    let scheduling = scheduler
+        .schedule(&ScheduleRequest {
+            prior_memory_state: None,
+            prior_reviewed_at: None,
+            reviewed_at: time(),
+            result: "not_correct".to_owned(),
+        })
+        .expect("schedule");
+    assert_eq!(scheduling["input"]["rating"], "Again");
+    let mut payload = json!({
+        "session_id":"session",
+        "assessment":{"answer_submitted":true,"target_knowledge_supplied_before_answer":false,"requirement_checks":{"rule":false}},
+        "confidence":"sure",
+        "metadata":{"prompt":"Prompt","answer":"Answer","grading_explanation":"Incorrect","verification_sources":["source"]},
+        "assessment_policy_id":"repeto-analytic-conjunctive-v1",
+        "result":"not_correct",
+        "scheduling":scheduling
+    });
+    scheduler
+        .validate_stored_review(time(), &payload)
+        .expect("stored decision validates");
+    payload["scheduling"]["output"]["memory_state"]["stability"] = json!(0.0);
     assert_eq!(
-        rating_for_result(RepetoReviewRecordInputResult::Correct),
-        SchedulingInputRating::Good
+        scheduler
+            .validate_stored_review(time(), &payload)
+            .expect_err("tampered f32 state rejects")
+            .code,
+        "stored_scheduling_mismatch"
     );
-    for result in [
-        RepetoReviewRecordInputResult::Partial,
-        RepetoReviewRecordInputResult::Incorrect,
-        RepetoReviewRecordInputResult::Assisted,
-    ] {
-        assert_eq!(rating_for_result(result), SchedulingInputRating::Again);
-    }
 }
 
 #[test]
-fn rejects_parameter_version_and_fuzz_drift() {
-    let mut changed_parameters = serde_json::to_value(configuration()).unwrap();
-    changed_parameters["scheduler"]["parameters"][0] = json!(42.0);
-    let changed_parameters = parse_document(SchemaKind::Configuration, changed_parameters).unwrap();
+fn scheduler_configuration_and_request_errors_are_stable() {
+    let mut invalid_implementation = configuration();
+    invalid_implementation.scheduler.implementation = json!("other");
     assert_eq!(
-        Scheduler::from_configuration(&changed_parameters)
-            .unwrap_err()
-            .code,
-        "unsupported_scheduler_parameters"
-    );
-
-    let mut changed_version = serde_json::to_value(unchecked_configuration()).unwrap();
-    changed_version["scheduler"]["version"] = json!("6.6.3");
-    let changed_version = serde_json::from_value(changed_version).unwrap();
-    assert_eq!(
-        Scheduler::from_configuration(&changed_version)
-            .unwrap_err()
-            .code,
-        "unsupported_scheduler_version"
-    );
-
-    let mut changed_fuzz = serde_json::to_value(unchecked_configuration()).unwrap();
-    changed_fuzz["fuzz_enabled"] = json!(true);
-    let changed_fuzz = serde_json::from_value(changed_fuzz).unwrap();
-    assert_eq!(
-        Scheduler::from_configuration(&changed_fuzz)
-            .unwrap_err()
-            .code,
-        "unsupported_fuzz_setting"
-    );
-
-    let mut changed_implementation = serde_json::to_value(unchecked_configuration()).unwrap();
-    changed_implementation["scheduler"]["implementation"] = json!("another-fsrs");
-    let changed_implementation = serde_json::from_value(changed_implementation).unwrap();
-    assert_eq!(
-        Scheduler::from_configuration(&changed_implementation)
-            .unwrap_err()
+        Scheduler::from_configuration(&invalid_implementation)
+            .expect_err("implementation")
             .code,
         "unsupported_scheduler_implementation"
     );
+    let mut invalid_version = configuration();
+    invalid_version.scheduler.version = json!("other");
+    assert_eq!(
+        Scheduler::from_configuration(&invalid_version)
+            .expect_err("version")
+            .code,
+        "unsupported_scheduler_version"
+    );
+    let mut invalid_fuzz = configuration();
+    invalid_fuzz.fuzz_enabled = json!(true);
+    assert_eq!(
+        Scheduler::from_configuration(&invalid_fuzz)
+            .expect_err("fuzz")
+            .code,
+        "unsupported_fuzz_setting"
+    );
+    let mut invalid_retention = configuration();
+    invalid_retention.desired_retention = 0.8;
+    assert_eq!(
+        Scheduler::from_configuration(&invalid_retention)
+            .expect_err("retention")
+            .code,
+        "unsupported_desired_retention"
+    );
+    let mut nonfinite_parameter = configuration();
+    nonfinite_parameter.scheduler.parameters[0] = f64::NAN;
+    assert_eq!(
+        Scheduler::from_configuration(&nonfinite_parameter)
+            .expect_err("nonfinite parameter")
+            .code,
+        "invalid_scheduler_parameter"
+    );
+
+    let scheduler = Scheduler::from_configuration(&configuration()).expect("scheduler");
+    assert_eq!(
+        scheduler
+            .schedule(&ScheduleRequest {
+                prior_memory_state: None,
+                prior_reviewed_at: None,
+                reviewed_at: time(),
+                result: "unknown".to_owned()
+            })
+            .expect_err("result")
+            .code,
+        "invalid_assessment_result"
+    );
+    let prior = repeto::domain::generated::MemoryState {
+        stability: f64::from(2.3_f32),
+        difficulty: f64::from(2.1_f32),
+    };
+    assert_eq!(
+        scheduler
+            .schedule(&ScheduleRequest {
+                prior_memory_state: Some(prior.clone()),
+                prior_reviewed_at: None,
+                reviewed_at: time(),
+                result: "correct".to_owned()
+            })
+            .expect_err("incomplete prior")
+            .code,
+        "incomplete_prior_review"
+    );
+    assert_eq!(
+        scheduler
+            .schedule(&ScheduleRequest {
+                prior_memory_state: Some(prior),
+                prior_reviewed_at: Some(time() + chrono::Duration::days(1)),
+                reviewed_at: time(),
+                result: "correct".to_owned()
+            })
+            .expect_err("backward prior")
+            .code,
+        "review_before_previous_review"
+    );
+    let prior_scheduling = scheduler
+        .schedule(&ScheduleRequest {
+            prior_memory_state: Some(repeto::domain::generated::MemoryState {
+                stability: f64::from(2.3_f32),
+                difficulty: f64::from(2.1_f32),
+            }),
+            prior_reviewed_at: Some(time() - chrono::Duration::days(1)),
+            reviewed_at: time(),
+            result: "correct".to_owned(),
+        })
+        .expect("prior scheduling");
+    assert_eq!(prior_scheduling["input"]["elapsed_days"], 1);
 }
 
 #[test]
-fn fixed_new_and_reviewed_states_produce_fixed_decisions() {
-    let scheduler = Scheduler::from_configuration(&configuration()).unwrap();
-    let first_reviewed_at = timestamp("2026-09-02T12:00:00Z");
-    let new_decision = scheduler
+fn stored_scheduler_integrity_rejects_each_closed_field_class() {
+    let scheduler = Scheduler::from_configuration(&configuration()).expect("scheduler");
+    let scheduling = scheduler
         .schedule(&ScheduleRequest {
             prior_memory_state: None,
             prior_reviewed_at: None,
-            reviewed_at: first_reviewed_at,
-            result: RepetoReviewRecordInputResult::Correct,
+            reviewed_at: time(),
+            result: "correct".to_owned(),
         })
-        .unwrap();
-
+        .expect("schedule");
+    let good = payload("correct", &scheduling);
+    let mutations: [fn(&mut serde_json::Value); 8] = [
+        |value| value["scheduling"]["scheduler"]["implementation"] = json!("other"),
+        |value| value["scheduling"]["scheduler"]["parameters"][0] = json!(0.0),
+        |value| value["scheduling"]["input"]["desired_retention"] = json!(0.8),
+        |value| value["scheduling"]["input"]["rating"] = json!("Again"),
+        |value| value["scheduling"]["input"]["elapsed_days"] = json!(1),
+        |value| value["scheduling"]["output"]["interval_days"] = json!(99),
+        |value| value["scheduling"]["output"]["due_at"] = json!("2026-09-03T12:00:00.000Z"),
+        |value| value["scheduling"]["output"]["retrievability_at_due"] = json!(0.0),
+    ];
+    for mutation in mutations {
+        let mut changed = good.clone();
+        mutation(&mut changed);
+        assert_eq!(
+            scheduler
+                .validate_stored_review(time(), &changed)
+                .expect_err("closed scheduling mutation")
+                .code,
+            "stored_scheduling_mismatch"
+        );
+    }
+    let mut state_bits = good.clone();
+    state_bits["scheduling"]["output"]["memory_state"]["difficulty"] = json!(0.0);
     assert_eq!(
-        new_decision.scheduling_input.rating,
-        SchedulingInputRating::Good
+        scheduler
+            .validate_stored_review(time(), &state_bits)
+            .expect_err("state bits")
+            .code,
+        "stored_scheduling_mismatch"
     );
-    assert_eq!(new_decision.scheduling_output.interval_days, 2);
+    let mut result_rating = good;
+    result_rating["result"] = json!("not_correct");
     assert_eq!(
-        new_decision.scheduling_output.due_at,
-        timestamp("2026-09-04T12:00:00Z")
+        scheduler
+            .validate_stored_review(time(), &result_rating)
+            .expect_err("result mapping")
+            .code,
+        "stored_scheduling_mismatch"
     );
-    assert_close(
-        new_decision.scheduling_output.memory_state.stability,
-        2.3065,
-    );
-    assert_close(
-        new_decision.scheduling_output.memory_state.difficulty,
-        2.118_104,
-    );
-    assert_close(
-        new_decision.scheduling_output.retrievability_at_due,
-        0.909_493_207_931_518_6,
-    );
-
-    let reviewed_decision = scheduler
-        .schedule(&ScheduleRequest {
-            prior_memory_state: Some(new_decision.scheduling_output.memory_state.clone()),
-            prior_reviewed_at: Some(first_reviewed_at),
-            reviewed_at: first_reviewed_at + Duration::days(3),
-            result: RepetoReviewRecordInputResult::Incorrect,
-        })
-        .unwrap();
-    assert_eq!(
-        reviewed_decision.scheduling_input.rating,
-        SchedulingInputRating::Again
-    );
-    assert_close(reviewed_decision.scheduling_input.elapsed_days, 3.0);
-    assert_eq!(reviewed_decision.scheduling_output.interval_days, 1);
-    assert_eq!(
-        reviewed_decision.scheduling_output.due_at,
-        timestamp("2026-09-06T12:00:00Z")
-    );
-    assert_close(
-        reviewed_decision.scheduling_output.memory_state.stability,
-        0.636_850_714_683_532_7,
-    );
-    assert_close(
-        reviewed_decision.scheduling_output.memory_state.difficulty,
-        7.394_502_162_933_35,
-    );
-    assert_close(
-        reviewed_decision.scheduling_output.retrievability_at_due,
-        0.866_146_445_274_353,
-    );
+    let error = scheduler
+        .validate_stored_review(time(), &result_rating)
+        .expect_err("result mapping details");
+    assert_eq!(error.details, json!({ "field": "input.rating" }));
 }
 
 #[test]
-fn repeated_fixed_input_serializes_to_identical_json() {
-    let scheduler = Scheduler::from_configuration(&configuration()).unwrap();
+fn repeated_fixed_scheduler_input_serializes_byte_stably() {
+    let scheduler = Scheduler::from_configuration(&configuration()).expect("scheduler");
     let request = ScheduleRequest {
-        prior_memory_state: Some(MemoryState {
-            stability: 2.3065,
-            difficulty: 2.118_104,
-        }),
-        prior_reviewed_at: Some(timestamp("2026-09-02T12:00:00Z")),
-        reviewed_at: timestamp("2026-09-05T12:00:00Z"),
-        result: RepetoReviewRecordInputResult::Partial,
+        prior_memory_state: None,
+        prior_reviewed_at: None,
+        reviewed_at: time(),
+        result: "correct".to_owned(),
     };
-
-    let first = serde_json::to_vec(&scheduler.schedule(&request).unwrap()).unwrap();
-    let second = serde_json::to_vec(&scheduler.schedule(&request).unwrap()).unwrap();
-
-    assert_eq!(first, second);
-}
-
-#[test]
-fn validates_a_stored_round_trip_from_schedule() {
-    let (scheduler, reviewed_at, decision) = correct_decision();
-
-    scheduler
-        .validate_stored_review(reviewed_at, &stored_payload(&decision))
-        .expect("a generated decision must validate unchanged");
-}
-
-#[test]
-fn rejects_a_tampered_stored_memory_state() {
-    let (scheduler, reviewed_at, decision) = correct_decision();
-    let mut payload = serde_json::to_value(stored_payload(&decision)).unwrap();
-    payload["scheduling_output"]["memory_state"]["stability"] = json!(9.0);
-
+    let first = scheduler.schedule(&request).expect("first schedule");
+    let second = scheduler.schedule(&request).expect("second schedule");
     assert_eq!(
-        scheduler
-            .validate_stored_review(reviewed_at, &payload_from_value(payload))
-            .unwrap_err()
-            .code,
-        "stored_memory_state_mismatch"
-    );
-}
-
-#[test]
-fn rejects_a_tampered_stored_interval() {
-    let (scheduler, reviewed_at, decision) = correct_decision();
-    let mut payload = serde_json::to_value(stored_payload(&decision)).unwrap();
-    payload["scheduling_output"]["interval_days"] = json!(99);
-
-    assert_eq!(
-        scheduler
-            .validate_stored_review(reviewed_at, &payload_from_value(payload))
-            .unwrap_err()
-            .code,
-        "stored_interval_mismatch"
-    );
-}
-
-#[test]
-fn rejects_a_tampered_stored_due_time() {
-    let (scheduler, reviewed_at, decision) = correct_decision();
-    let mut payload = serde_json::to_value(stored_payload(&decision)).unwrap();
-    payload["scheduling_output"]["due_at"] = json!("2026-09-05T12:00:00Z");
-
-    assert_eq!(
-        scheduler
-            .validate_stored_review(reviewed_at, &payload_from_value(payload))
-            .unwrap_err()
-            .code,
-        "stored_due_time_mismatch"
-    );
-}
-
-#[test]
-fn rejects_a_tampered_stored_retrievability() {
-    let (scheduler, reviewed_at, decision) = correct_decision();
-    let mut payload = serde_json::to_value(stored_payload(&decision)).unwrap();
-    payload["scheduling_output"]["retrievability_at_due"] = json!(0.1);
-
-    assert_eq!(
-        scheduler
-            .validate_stored_review(reviewed_at, &payload_from_value(payload))
-            .unwrap_err()
-            .code,
-        "stored_retrievability_mismatch"
+        serde_json::to_vec(&first).expect("first JSON"),
+        serde_json::to_vec(&second).expect("second JSON")
     );
 }

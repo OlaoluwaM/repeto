@@ -14,15 +14,16 @@ use std::{
 };
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use repeto_assessment::{Assessment, AssessmentResult, derive_result};
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::{
-    domain::{LifecycleState, RepetoEvent},
+    domain::LifecycleState,
     scheduler::{Scheduler, SchedulerError},
     validation::{
-        Catalogue, SchemaKind, ValidationError, load_catalogue, parse_document, parse_json,
-        validate_catalogue, validate_document,
+        Catalogue, SchemaKind, ValidationError, load_catalogue, parse_json, validate_catalogue,
+        validate_document,
     },
 };
 
@@ -109,7 +110,7 @@ impl EventRequest {
             "schema_version": 1,
             "sequence": sequence,
             "event_type": self.event_type(),
-            "occurred_at": self.occurred_at.to_rfc3339_opts(SecondsFormat::AutoSi, true),
+            "occurred_at": self.occurred_at.to_rfc3339_opts(SecondsFormat::Millis, true),
             "target_id": self.target_id,
             "payload": self.payload(),
         })
@@ -297,13 +298,11 @@ pub fn replay(catalogue: &Catalogue) -> Result<DerivedStudyState, EventStoreErro
             .collect(),
     };
 
-    for typed_event in &catalogue.events {
-        let event =
-            serde_json::to_value(typed_event).map_err(|error| serialization_error(&error))?;
+    for event in &catalogue.events {
         if event.get("event_type").and_then(Value::as_str) == Some("review_completed") {
-            validate_stored_review_value(&scheduler, &state, &event)?;
+            validate_stored_review_value(&scheduler, &state, catalogue, event)?;
         }
-        apply_event(&mut state, &event)?;
+        apply_event(&mut state, event)?;
     }
     Ok(state)
 }
@@ -311,14 +310,70 @@ pub fn replay(catalogue: &Catalogue) -> Result<DerivedStudyState, EventStoreErro
 fn validate_stored_review_value(
     scheduler: &Scheduler,
     state: &DerivedStudyState,
+    catalogue: &Catalogue,
     event: &Value,
 ) -> Result<(), EventStoreError> {
     validate_replayed_review(state, event)?;
-    let typed: RepetoEvent =
-        parse_document(SchemaKind::Event, event.clone()).map_err(EventStoreError::from)?;
+    validate_stored_result(catalogue, event)?;
     scheduler
-        .validate_stored_review(typed.occurred_at, &typed.payload)
+        .validate_stored_review(
+            event_timestamp(event)?,
+            event
+                .get("payload")
+                .ok_or_else(|| malformed_event("review has no payload"))?,
+        )
         .map_err(scheduler_error)
+}
+
+fn validate_stored_result(catalogue: &Catalogue, event: &Value) -> Result<(), EventStoreError> {
+    let target_id = event_string(event, "target_id")?;
+    let target = catalogue
+        .targets
+        .get(target_id)
+        .ok_or_else(|| malformed_event("review target is missing"))?;
+    let requirements = target
+        .correct_answer_requirements
+        .iter()
+        .map(|(id, description)| (id.to_string(), description.to_string()))
+        .collect();
+    let payload = event
+        .get("payload")
+        .ok_or_else(|| malformed_event("review has no payload"))?;
+    let assessment = payload
+        .get("assessment")
+        .ok_or_else(|| malformed_event("review has no assessment"))?;
+    let checks = serde_json::from_value(
+        assessment
+            .get("requirement_checks")
+            .cloned()
+            .ok_or_else(|| malformed_event("review has no requirement checks"))?,
+    )
+    .map_err(|_| malformed_event("review requirement checks are invalid"))?;
+    let assessment = Assessment::new(
+        assessment
+            .get("answer_submitted")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| malformed_event("review has no answer flag"))?,
+        assessment
+            .get("target_knowledge_supplied_before_answer")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| malformed_event("review has no assistance flag"))?,
+        checks,
+    );
+    let expected = match derive_result(&requirements, &assessment)
+        .map_err(|_| malformed_event("review requirements do not match target"))?
+    {
+        AssessmentResult::Correct => "correct",
+        AssessmentResult::NotCorrect => "not_correct",
+    };
+    if payload.get("result").and_then(Value::as_str) != Some(expected) {
+        return Err(EventStoreError::new(
+            "stored_assessment_result_mismatch",
+            "stored result does not match the assessment policy",
+            json!({ "target_id": target_id, "expected": expected }),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_replayed_review(
@@ -331,14 +386,15 @@ fn validate_replayed_review(
         .get("payload")
         .ok_or_else(|| malformed_event("review has no payload"))?;
     let scheduling_input = payload
-        .get("scheduling_input")
+        .get("scheduling")
+        .and_then(|scheduling| scheduling.get("input"))
         .ok_or_else(|| malformed_event("review has no scheduling input"))?;
     let actual_prior = scheduling_input
         .get("prior_memory_state")
         .ok_or_else(|| malformed_event("review has no prior memory state"))?;
     let actual_elapsed = scheduling_input
         .get("elapsed_days")
-        .and_then(Value::as_f64)
+        .and_then(Value::as_u64)
         .ok_or_else(|| malformed_event("review has no numeric elapsed days"))?;
     let target = state.target(target_id).ok_or_else(|| {
         EventStoreError::new(
@@ -347,12 +403,28 @@ fn validate_replayed_review(
             json!({ "target_id": target_id }),
         )
     })?;
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| malformed_event("review has no session ID"))?;
+    if target
+        .reviews
+        .iter()
+        .any(|review| review.payload.get("session_id").and_then(Value::as_str) == Some(session_id))
+    {
+        return Err(EventStoreError::new(
+            "duplicate_effective_review_session",
+            "a replayed target history contains the session ID twice",
+            json!({ "target_id": target_id, "session_id": session_id }),
+        ));
+    }
 
     let (expected_prior, expected_elapsed) = match &target.latest_review {
         Some(previous) => {
             let expected_prior = previous
                 .payload
-                .get("scheduling_output")
+                .get("scheduling")
+                .and_then(|scheduling| scheduling.get("output"))
                 .and_then(|output| output.get("memory_state"))
                 .ok_or_else(|| malformed_event("previous review has no memory state"))?;
             let elapsed = reviewed_at.signed_duration_since(previous.occurred_at);
@@ -370,9 +442,9 @@ fn validate_replayed_review(
                     json!({ "error": error.to_string() }),
                 )
             })?;
-            (expected_prior, f64::from(days))
+            (expected_prior, u64::from(days))
         }
-        None => (&Value::Null, 0.0),
+        None => (&Value::Null, 0),
     };
     if actual_prior != expected_prior {
         return Err(EventStoreError::new(
@@ -381,7 +453,7 @@ fn validate_replayed_review(
             json!({ "target_id": target_id, "expected": expected_prior, "actual": actual_prior }),
         ));
     }
-    if actual_elapsed.to_bits() != expected_elapsed.to_bits() {
+    if actual_elapsed != expected_elapsed {
         return Err(EventStoreError::new(
             "replay_elapsed_days_mismatch",
             "review elapsed days must equal whole days since the latest replayed review",
@@ -419,6 +491,7 @@ pub fn write_event_with_failure_point(
     request: &EventRequest,
     failure_point: FailurePoint,
 ) -> Result<WriteOutcome, EventStoreError> {
+    require_write_platform()?;
     let _lock = DataDirectoryLock::acquire(data_directory)?;
     let locked = load_locked_state(data_directory)?;
     append_locked(locked, data_directory, request, failure_point)
@@ -440,10 +513,29 @@ where
     F: FnOnce(&Catalogue, &DerivedStudyState) -> Result<EventRequest, E>,
     E: From<EventStoreError>,
 {
+    require_write_platform().map_err(E::from)?;
     let _lock = DataDirectoryLock::acquire(data_directory).map_err(E::from)?;
     let locked = load_locked_state(data_directory).map_err(E::from)?;
     let request = build(&locked.catalogue, &locked.derived)?;
     append_locked(locked, data_directory, &request, FailurePoint::None).map_err(E::from)
+}
+
+/// Whether this compiled target is permitted to create or change v1 events.
+#[must_use]
+pub const fn write_platform_supported() -> bool {
+    cfg!(all(target_arch = "x86_64", target_os = "linux"))
+}
+
+fn require_write_platform() -> Result<(), EventStoreError> {
+    if write_platform_supported() {
+        Ok(())
+    } else {
+        Err(EventStoreError::new(
+            "unsupported_write_platform",
+            "version 1 writes require x86_64-linux",
+            Value::Null,
+        ))
+    }
 }
 
 struct LockedStudyState {
@@ -490,7 +582,12 @@ fn append_locked(
     let candidate = request.as_value(sequence);
     validate_candidate(&locked.catalogue, &locked.raw_events, &candidate)?;
     if candidate.get("event_type").and_then(Value::as_str) == Some("review_completed") {
-        validate_stored_review_value(&locked.scheduler, &locked.derived, &candidate)?;
+        validate_stored_review_value(
+            &locked.scheduler,
+            &locked.derived,
+            &locked.catalogue,
+            &candidate,
+        )?;
     }
 
     let candidate_line =
@@ -600,7 +697,64 @@ fn retry_or_noop(
     request: &EventRequest,
 ) -> Result<Option<WriteOutcome>, EventStoreError> {
     if matches!(request.kind, EventRequestKind::Review { .. }) {
-        return review_retry(raw_events, request);
+        if let Some(outcome) = review_retry(raw_events, request)? {
+            return Ok(Some(outcome));
+        }
+        let request_payload = request.payload();
+        let session_id = request_payload
+            .get("session_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| malformed_event("review request has no session_id"))?;
+        if derived.target(&request.target_id).is_some_and(|target| {
+            target.reviews.iter().any(|review| {
+                review.payload.get("session_id").and_then(Value::as_str) == Some(session_id)
+            })
+        }) {
+            return Err(EventStoreError::new(
+                "duplicate_effective_review_session",
+                "a carried history already contains this review session",
+                json!({ "target_id": request.target_id, "session_id": session_id }),
+            ));
+        }
+        return Ok(None);
+    }
+
+    if let EventRequestKind::Revision {
+        ref new_target_id, ..
+    } = request.kind
+    {
+        let existing = raw_events.iter().find(|event| {
+            event.get("event_type").and_then(Value::as_str) == Some("revision")
+                && event.get("target_id").and_then(Value::as_str)
+                    == Some(request.target_id.as_str())
+                && event
+                    .get("payload")
+                    .and_then(|payload| payload.get("new_target_id"))
+                    .and_then(Value::as_str)
+                    == Some(new_target_id)
+        });
+        if let Some(existing) = existing {
+            let same = existing.get("occurred_at").and_then(Value::as_str)
+                == Some(
+                    request
+                        .occurred_at
+                        .to_rfc3339_opts(SecondsFormat::Millis, true)
+                        .as_str(),
+                )
+                && existing.get("payload") == Some(&request.payload());
+            return if same {
+                Ok(Some(WriteOutcome {
+                    event: Some(existing.clone()),
+                    disposition: WriteDisposition::Retried,
+                }))
+            } else {
+                Err(EventStoreError::new(
+                    "revision_conflict",
+                    "the old and new target IDs already have different committed revision content",
+                    json!({ "old_target_id": request.target_id, "new_target_id": new_target_id }),
+                ))
+            };
+        }
     }
 
     let target = derived.target(&request.target_id).ok_or_else(|| {
@@ -616,19 +770,7 @@ fn retry_or_noop(
         }
         EventRequestKind::Pause { .. } => target.lifecycle == LifecycleState::Paused,
         EventRequestKind::Retirement { .. } => target.lifecycle == LifecycleState::Retired,
-        EventRequestKind::Revision {
-            ref new_target_id, ..
-        } => raw_events.iter().any(|event| {
-            event.get("event_type").and_then(Value::as_str) == Some("revision")
-                && event.get("target_id").and_then(Value::as_str)
-                    == Some(request.target_id.as_str())
-                && event
-                    .get("payload")
-                    .and_then(|payload| payload.get("new_target_id"))
-                    .and_then(Value::as_str)
-                    == Some(new_target_id)
-        }),
-        EventRequestKind::Review { .. } => false,
+        EventRequestKind::Revision { .. } | EventRequestKind::Review { .. } => false,
     };
     Ok(is_noop.then_some(WriteOutcome {
         event: None,
@@ -658,11 +800,11 @@ fn review_retry(
         return Ok(None);
     };
 
-    let requested_input = review_input_fields(&payload)?;
+    let requested_input = review_input_fields(&payload, request.occurred_at)?;
     let stored_payload = existing
         .get("payload")
         .ok_or_else(|| malformed_event("stored review has no payload"))?;
-    let stored_input = review_input_fields(stored_payload)?;
+    let stored_input = review_input_fields(stored_payload, event_timestamp(existing)?)?;
     if requested_input == stored_input {
         Ok(Some(WriteOutcome {
             event: Some(existing.clone()),
@@ -677,27 +819,31 @@ fn review_retry(
     }
 }
 
-fn review_input_fields(payload: &Value) -> Result<Value, EventStoreError> {
-    const INPUT_FIELDS: [&str; 7] = [
-        "session_id",
-        "prompt",
-        "cold_answer",
-        "confidence",
-        "result",
-        "grading_notes",
-        "repair",
-    ];
+fn review_input_fields(
+    payload: &Value,
+    occurred_at: DateTime<Utc>,
+) -> Result<Value, EventStoreError> {
+    const INPUT_FIELDS: [&str; 4] = ["session_id", "assessment", "confidence", "metadata"];
     let object = payload
         .as_object()
         .ok_or_else(|| malformed_event("review payload is not an object"))?;
     let mut input = serde_json::Map::new();
     for field in INPUT_FIELDS {
-        let value = object
-            .get(field)
-            .cloned()
-            .ok_or_else(|| malformed_event("review payload is missing an input field"))?;
-        input.insert(field.to_owned(), value);
+        if let Some(value) = object.get(field).cloned() {
+            input.insert(field.to_owned(), value);
+        }
     }
+    for required in ["session_id", "assessment", "metadata"] {
+        if !input.contains_key(required) {
+            return Err(malformed_event(
+                "review payload is missing a review input field",
+            ));
+        }
+    }
+    input.insert(
+        "occurred_at".to_owned(),
+        Value::String(occurred_at.to_rfc3339_opts(SecondsFormat::Millis, true)),
+    );
     Ok(Value::Object(input))
 }
 
@@ -920,7 +1066,7 @@ fn serialization_error(error: &serde_json::Error) -> EventStoreError {
 }
 
 fn scheduler_error(error: SchedulerError) -> EventStoreError {
-    EventStoreError::new(error.code, error.message, Value::Null)
+    EventStoreError::new(error.code, error.message, error.details)
 }
 
 fn io_error(
@@ -957,12 +1103,11 @@ impl DataDirectoryLock {
                     &error,
                 )
             })?;
-        file.lock().map_err(|error| {
-            io_error(
-                "lock_error",
-                "could not acquire study-data lock",
-                &lock_path,
-                &error,
+        file.try_lock().map_err(|error| {
+            EventStoreError::new(
+                "write_in_progress",
+                "a state-changing command is already writing this data directory",
+                json!({ "path": lock_path, "error": error.to_string() }),
             )
         })?;
         Ok(Self { _file: file })

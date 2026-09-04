@@ -1,351 +1,333 @@
-//! Deterministic FSRS scheduling with the version 1 Repeto policy.
+//! Deterministic FSRS scheduling at the version 1 persistence boundary.
+#![allow(
+    clippy::missing_errors_doc,
+    reason = "the public scheduler API is internal to the Repeto runtime"
+)]
 
 use std::fmt;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use fsrs_rs::{FSRS, MemoryState as FsrsMemoryState, current_retrievability};
 use serde::Serialize;
+use serde_json::{Value, json};
 
-use crate::domain::{
-    RepetoConfiguration,
-    generated::{
-        MemoryState, RepetoEventPayload, RepetoEventPayloadVariant3FsrsRating,
-        RepetoEventPayloadVariant3Result, RepetoReviewRecordInputConfidence,
-        RepetoReviewRecordInputResult, SchedulingInput, SchedulingInputRating, SchedulingOutput,
-    },
-};
+use crate::domain::{RepetoConfiguration, generated::MemoryState};
 
-/// The persisted implementation name for the supported scheduler.
 pub const IMPLEMENTATION: &str = "fsrs-rs";
-/// The exact implementation version used by version 1.
 pub const VERSION: &str = "6.6.2";
-/// The fixed desired retention selected for version 1.
-pub const DESIRED_RETENTION: f64 = 0.9;
-const DESIRED_RETENTION_FSRS: f32 = 0.9;
-/// The stored values come from fsrs-rs f32 outputs serialized as JSON f64 values.
-const FSRS_OUTPUT_TOLERANCE: f64 = 0.000_001;
+const DESIRED_RETENTION: f32 = 0.9;
 
-/// A stable error from the scheduler boundary.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SchedulerError {
-    /// A stable programmatic error code.
     pub code: &'static str,
-    /// A concise explanation for a human reader.
     pub message: String,
+    pub details: Value,
 }
-
 impl SchedulerError {
-    const fn new(code: &'static str, message: String) -> Self {
-        Self { code, message }
+    fn new(code: &'static str, message: String) -> Self {
+        Self {
+            code,
+            message,
+            details: Value::Null,
+        }
+    }
+    fn with_details(code: &'static str, message: String, details: Value) -> Self {
+        Self {
+            code,
+            message,
+            details,
+        }
     }
 }
-
 impl fmt::Display for SchedulerError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}: {}", self.code, self.message)
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
     }
 }
-
 impl std::error::Error for SchedulerError {}
 
-/// The latest persisted review data needed to calculate queue priority.
 #[derive(Clone, Debug)]
 pub struct LatestReview {
-    /// The memory state returned by the completed review.
     pub memory_state: MemoryState,
-    /// The instant at which that memory state was produced.
     pub reviewed_at: DateTime<Utc>,
-    /// The stored deadline returned by that review.
     pub due_at: DateTime<Utc>,
-    /// The learner's self-reported confidence for the completed review.
-    pub confidence: RepetoReviewRecordInputConfidence,
-    /// The graded result for the completed review.
-    pub result: RepetoReviewRecordInputResult,
+    pub confidence: Option<String>,
+    pub result: String,
 }
-
-/// Inputs for one completed review scheduling calculation.
 #[derive(Clone, Debug)]
 pub struct ScheduleRequest {
-    /// The previous memory state, if the target was reviewed before.
     pub prior_memory_state: Option<MemoryState>,
-    /// When the previous memory state was produced.
     pub prior_reviewed_at: Option<DateTime<Utc>>,
-    /// When this review completed.
     pub reviewed_at: DateTime<Utc>,
-    /// The schema-derived review result.
-    pub result: RepetoReviewRecordInputResult,
+    pub result: String,
 }
 
-/// Complete, persistable output from one deterministic review calculation.
-#[derive(Clone, Debug, Serialize)]
-pub struct SchedulingDecision {
-    /// The fixed implementation and version that produced this decision.
-    pub scheduler_version: String,
-    /// The complete active FSRS parameter set.
-    pub parameter_set: Vec<f64>,
-    /// The exact input consumed by the scheduler.
-    pub scheduling_input: SchedulingInput,
-    /// The closed schema-owned scheduling output.
-    pub scheduling_output: SchedulingOutput,
-    /// A duplicate of `scheduling_output.due_at` required by the event contract.
-    pub next_due_at: DateTime<Utc>,
-}
-
-/// A validated scheduler with the only version 1 configuration.
 #[derive(Debug)]
 pub struct Scheduler {
     fsrs: FSRS,
-    parameter_set: Vec<f64>,
+    parameters: [f32; 21],
 }
 
 impl Scheduler {
-    /// Validates the persisted configuration and creates the fixed FSRS engine.
-    ///
-    /// # Errors
-    ///
-    /// Returns a stable error when configuration differs from the pinned policy
-    /// or the FSRS library rejects the pinned parameters.
     pub fn from_configuration(configuration: &RepetoConfiguration) -> Result<Self, SchedulerError> {
-        validate_configuration(configuration)?;
-        let parameter_set = configuration.scheduler.parameters.clone();
-        let fsrs = FSRS::new(&fsrs_rs::DEFAULT_PARAMETERS).map_err(|error| {
+        if configuration.scheduler.implementation != json!(IMPLEMENTATION) {
+            return Err(SchedulerError::new(
+                "unsupported_scheduler_implementation",
+                "the configuration must use fsrs-rs".to_owned(),
+            ));
+        }
+        if configuration.scheduler.version != json!(VERSION) {
+            return Err(SchedulerError::new(
+                "unsupported_scheduler_version",
+                "the configuration must use fsrs-rs 6.6.2".to_owned(),
+            ));
+        }
+        if configuration.fuzz_enabled != json!(false) {
+            return Err(SchedulerError::new(
+                "unsupported_fuzz_setting",
+                "version 1 requires fuzz_enabled to be false".to_owned(),
+            ));
+        }
+        if configuration.desired_retention.to_bits() != 0.9_f64.to_bits() {
+            return Err(SchedulerError::new(
+                "unsupported_desired_retention",
+                "version 1 requires desired_retention to be 0.9".to_owned(),
+            ));
+        }
+        let parameters: [f32; 21] = configuration
+            .scheduler
+            .parameters
+            .iter()
+            .copied()
+            .map(|v| finite_f32(v, "invalid_scheduler_parameter"))
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+            .map_err(|v: Vec<f32>| {
+                SchedulerError::new(
+                    "invalid_scheduler_parameter_count",
+                    format!(
+                        "version 1 requires 21 scheduler parameters, got {}",
+                        v.len()
+                    ),
+                )
+            })?;
+        let fsrs = FSRS::new(&parameters).map_err(|error| {
             SchedulerError::new(
                 "scheduler_initialization_error",
-                format!("the pinned FSRS parameter set was rejected: {error:?}"),
+                format!("fsrs-rs rejected the configured parameters: {error:?}"),
             )
         })?;
-        Ok(Self {
-            fsrs,
-            parameter_set,
-        })
+        Ok(Self { fsrs, parameters })
     }
 
-    /// Calculates the next state and due time for a completed review.
-    ///
-    /// # Errors
-    ///
-    /// Returns a stable error for invalid timing, memory state, or FSRS output.
-    pub fn schedule(
-        &self,
-        request: &ScheduleRequest,
-    ) -> Result<SchedulingDecision, SchedulerError> {
-        let elapsed_days = elapsed_whole_days(
+    pub fn schedule(&self, request: &ScheduleRequest) -> Result<Value, SchedulerError> {
+        let elapsed = elapsed_whole_days(
             request.prior_memory_state.as_ref(),
             request.prior_reviewed_at,
             request.reviewed_at,
         )?;
+        let rating = match request.result.as_str() {
+            "correct" => "Good",
+            "not_correct" => "Again",
+            _ => {
+                return Err(SchedulerError::new(
+                    "invalid_assessment_result",
+                    "the assessment result must be correct or not_correct".to_owned(),
+                ));
+            }
+        };
         self.schedule_with_input(
-            request.prior_memory_state.clone(),
-            elapsed_days,
-            rating_for_result(request.result),
+            request.prior_memory_state.as_ref(),
+            elapsed,
+            rating,
             request.reviewed_at,
         )
     }
 
     fn schedule_with_input(
         &self,
-        prior_memory_state: Option<MemoryState>,
-        elapsed_days: u32,
-        rating: SchedulingInputRating,
+        prior: Option<&MemoryState>,
+        elapsed: u32,
+        rating: &str,
         reviewed_at: DateTime<Utc>,
-    ) -> Result<SchedulingDecision, SchedulerError> {
-        let fsrs_prior_memory_state = prior_memory_state
-            .as_ref()
-            .map(to_fsrs_memory_state)
-            .transpose()?;
-        let next_states = self
+    ) -> Result<Value, SchedulerError> {
+        let states = self
             .fsrs
             .next_states(
-                fsrs_prior_memory_state,
-                DESIRED_RETENTION_FSRS,
-                elapsed_days,
+                prior.map(to_fsrs_memory_state).transpose()?,
+                DESIRED_RETENTION,
+                elapsed,
             )
             .map_err(|error| {
                 SchedulerError::new(
                     "scheduler_calculation_error",
-                    format!("FSRS could not calculate the next state: {error:?}"),
+                    format!("fsrs-rs could not calculate a next state: {error:?}"),
                 )
             })?;
-        let selected = match rating {
-            SchedulingInputRating::Again => next_states.again,
-            SchedulingInputRating::Good => next_states.good,
+        let state = match rating {
+            "Again" => states.again,
+            "Good" => states.good,
+            _ => return Err(mismatch("input.rating")),
         };
-        let interval_days = interval_days(selected.interval)?;
+        let interval = interval_days(state.interval)?;
         let due_at = reviewed_at
-            .checked_add_signed(Duration::days(i64::from(interval_days)))
+            .checked_add_signed(Duration::days(i64::from(interval)))
             .ok_or_else(|| {
                 SchedulerError::new(
                     "due_time_overflow",
-                    "the selected interval exceeds the supported timestamp range".to_owned(),
+                    "the scheduler interval exceeds the timestamp range".to_owned(),
                 )
             })?;
-        let memory_state = from_fsrs_memory_state(selected.memory);
-        let retrievability_at_due =
-            self.retrievability_at(&memory_state, f64::from(interval_days))?;
-        let scheduling_input = SchedulingInput {
-            desired_retention: DESIRED_RETENTION,
-            elapsed_days: f64::from(elapsed_days),
-            prior_memory_state,
-            rating,
+        let memory = MemoryState {
+            stability: f64::from(state.memory.stability),
+            difficulty: f64::from(state.memory.difficulty),
         };
-        let scheduling_output = SchedulingOutput {
-            memory_state,
-            interval_days: u64::from(interval_days),
-            retrievability_at_due,
-            due_at,
-        };
-
-        Ok(SchedulingDecision {
-            scheduler_version: format!("{IMPLEMENTATION}-{VERSION}"),
-            parameter_set: self.parameter_set.clone(),
-            next_due_at: scheduling_output.due_at,
-            scheduling_input,
-            scheduling_output,
-        })
+        let retrievability = current_retrievability(
+            state.memory,
+            interval_to_f32(interval),
+            fsrs_rs::FSRS6_DEFAULT_DECAY,
+        );
+        if !retrievability.is_finite() || !(0.0..=1.0).contains(&retrievability) {
+            return Err(SchedulerError::new(
+                "invalid_retrievability",
+                "fsrs-rs produced an invalid retrievability".to_owned(),
+            ));
+        }
+        Ok(json!({
+            "scheduler": { "implementation": IMPLEMENTATION, "version": VERSION, "fuzz_enabled": false, "parameters": self.parameters.iter().map(|v| f64::from(*v)).collect::<Vec<_>>() },
+            "input": { "prior_memory_state": prior, "elapsed_days": elapsed, "rating": rating, "desired_retention": f64::from(DESIRED_RETENTION) },
+            "output": { "memory_state": memory, "interval_days": interval, "retrievability_at_due": f64::from(retrievability), "due_at": due_at.to_rfc3339_opts(SecondsFormat::Millis, true) },
+        }))
     }
 
-    /// Verifies that a stored completed-review payload matches pinned FSRS output.
-    ///
-    /// The caller must first establish that this is a schema-valid
-    /// `review_completed` payload. This function does not rewrite stored values.
-    ///
-    /// # Errors
-    ///
-    /// Returns a stable error when the stored scheduler identity, input, or
-    /// output does not match the version 1 deterministic calculation.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the integrity boundary keeps each stored scheduling field comparison together"
+    )]
     pub fn validate_stored_review(
         &self,
         reviewed_at: DateTime<Utc>,
-        payload: &RepetoEventPayload,
+        payload: &Value,
     ) -> Result<(), SchedulerError> {
-        let RepetoEventPayload::Variant3 {
-            fsrs_rating,
-            next_due_at,
-            parameter_set,
-            result,
-            scheduler_version,
-            scheduling_input,
-            scheduling_output,
-            ..
-        } = payload
-        else {
-            return Err(SchedulerError::new(
-                "invalid_stored_review_payload",
-                "stored scheduler validation requires a review_completed payload".to_owned(),
-            ));
+        let scheduling = payload
+            .get("scheduling")
+            .ok_or_else(|| mismatch("scheduling"))?;
+        let scheduler = scheduling
+            .get("scheduler")
+            .ok_or_else(|| mismatch("scheduler"))?;
+        if scheduler.get("implementation") != Some(&json!(IMPLEMENTATION))
+            || scheduler.get("version") != Some(&json!(VERSION))
+            || scheduler.get("fuzz_enabled") != Some(&json!(false))
+        {
+            return Err(mismatch("scheduler"));
+        }
+        let parameters = scheduler
+            .get("parameters")
+            .and_then(Value::as_array)
+            .ok_or_else(|| mismatch("scheduler.parameters"))?;
+        if parameters.len() != self.parameters.len()
+            || parameters
+                .iter()
+                .zip(self.parameters)
+                .any(|(actual, expected)| {
+                    actual
+                        .as_f64()
+                        .and_then(|value| finite_f32(value, "stored_scheduling_mismatch").ok())
+                        .map(f32::to_bits)
+                        != Some(expected.to_bits())
+                })
+        {
+            return Err(mismatch("scheduler.parameters"));
+        }
+        let input = scheduling.get("input").ok_or_else(|| mismatch("input"))?;
+        if value_f32_bits(
+            input
+                .get("desired_retention")
+                .ok_or_else(|| mismatch("input.desired_retention"))?,
+        )? != DESIRED_RETENTION.to_bits()
+        {
+            return Err(mismatch("input.desired_retention"));
+        }
+        let elapsed = input
+            .get("elapsed_days")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| mismatch("input.elapsed_days"))?;
+        let elapsed = u32::try_from(elapsed).map_err(|_| mismatch("input.elapsed_days"))?;
+        let rating = input
+            .get("rating")
+            .and_then(Value::as_str)
+            .ok_or_else(|| mismatch("input.rating"))?;
+        let result = payload
+            .get("result")
+            .and_then(Value::as_str)
+            .ok_or_else(|| mismatch("result"))?;
+        let expected_rating = match result {
+            "correct" => "Good",
+            "not_correct" => "Again",
+            _ => return Err(mismatch("result")),
         };
-        if scheduler_version.as_str() != format!("{IMPLEMENTATION}-{VERSION}") {
-            return Err(SchedulerError::new(
-                "stored_scheduler_version_mismatch",
-                "stored review does not name the pinned scheduler version".to_owned(),
-            ));
+        if rating != expected_rating {
+            return Err(mismatch("input.rating"));
         }
-        if !same_parameter_set(parameter_set, &self.parameter_set) {
-            return Err(SchedulerError::new(
-                "stored_parameter_set_mismatch",
-                "stored review does not use the pinned FSRS parameter set".to_owned(),
-            ));
+        let prior = input
+            .get("prior_memory_state")
+            .map(memory_state)
+            .transpose()?
+            .flatten();
+        if prior.is_none() && elapsed != 0 {
+            return Err(mismatch("input.elapsed_days"));
         }
-        if scheduling_input.desired_retention.to_bits() != DESIRED_RETENTION.to_bits() {
-            return Err(SchedulerError::new(
-                "stored_desired_retention_mismatch",
-                "stored review does not use the version 1 desired retention".to_owned(),
-            ));
+        let expected = self.schedule_with_input(prior.as_ref(), elapsed, rating, reviewed_at)?;
+        let actual_output = scheduling.get("output").ok_or_else(|| mismatch("output"))?;
+        let expected_output = expected.get("output").ok_or_else(|| mismatch("output"))?;
+        if actual_output.get("interval_days") != expected_output.get("interval_days") {
+            return Err(mismatch("interval_days"));
         }
-        let expected_rating = rating_for_stored_result(*result);
-        if scheduling_input.rating != expected_rating
-            || !stored_fsrs_rating_matches(*fsrs_rating, expected_rating)
-        {
-            return Err(SchedulerError::new(
-                "stored_rating_mismatch",
-                "stored FSRS ratings do not match the completed review result".to_owned(),
-            ));
+        let actual_due_at = actual_output
+            .get("due_at")
+            .and_then(Value::as_str)
+            .ok_or_else(|| mismatch("due_at"))?
+            .parse::<DateTime<Utc>>()
+            .map_err(|_| mismatch("due_at"))?;
+        let expected_due_at = expected_output
+            .get("due_at")
+            .and_then(Value::as_str)
+            .ok_or_else(|| mismatch("due_at"))?
+            .parse::<DateTime<Utc>>()
+            .map_err(|_| mismatch("due_at"))?;
+        if actual_due_at != expected_due_at {
+            return Err(mismatch("due_at"));
         }
-        let elapsed_days = stored_elapsed_days(scheduling_input.elapsed_days)?;
-        if scheduling_input.prior_memory_state.is_none() && elapsed_days != 0 {
-            return Err(SchedulerError::new(
-                "stored_elapsed_days_invalid",
-                "a new target must store zero elapsed days".to_owned(),
-            ));
+        for field in ["stability", "difficulty"] {
+            let actual = actual_output
+                .get("memory_state")
+                .and_then(|v| v.get(field))
+                .ok_or_else(|| mismatch(field))?;
+            let expected = expected_output
+                .get("memory_state")
+                .and_then(|v| v.get(field))
+                .ok_or_else(|| mismatch(field))?;
+            if value_f32_bits(actual)? != value_f32_bits(expected)? {
+                return Err(mismatch(field));
+            }
         }
-        let expected = self.schedule_with_input(
-            scheduling_input.prior_memory_state.clone(),
-            elapsed_days,
-            expected_rating,
-            reviewed_at,
-        )?;
-        if !same_memory_state(
-            &scheduling_output.memory_state,
-            &expected.scheduling_output.memory_state,
-        ) {
-            return Err(SchedulerError::new(
-                "stored_memory_state_mismatch",
-                "stored memory state differs from pinned FSRS output".to_owned(),
-            ));
-        }
-        if scheduling_output.interval_days != expected.scheduling_output.interval_days {
-            return Err(SchedulerError::new(
-                "stored_interval_mismatch",
-                "stored interval differs from pinned rounded FSRS output".to_owned(),
-            ));
-        }
-        if scheduling_output.due_at != expected.scheduling_output.due_at
-            || *next_due_at != expected.next_due_at
-        {
-            return Err(SchedulerError::new(
-                "stored_due_time_mismatch",
-                "stored due time differs from pinned FSRS output".to_owned(),
-            ));
-        }
-        if !same_fsrs_output(
-            scheduling_output.retrievability_at_due,
-            expected.scheduling_output.retrievability_at_due,
-        ) {
-            return Err(SchedulerError::new(
-                "stored_retrievability_mismatch",
-                "stored due-time retrievability differs from pinned FSRS output".to_owned(),
-            ));
+        if value_f32_bits(
+            actual_output
+                .get("retrievability_at_due")
+                .ok_or_else(|| mismatch("retrievability_at_due"))?,
+        )? != value_f32_bits(
+            expected_output
+                .get("retrievability_at_due")
+                .ok_or_else(|| mismatch("retrievability_at_due"))?,
+        )? {
+            return Err(mismatch("retrievability_at_due"));
         }
         Ok(())
     }
 
-    /// Calculates recall probability from a stored memory state at elapsed days.
-    ///
-    /// # Errors
-    ///
-    /// Returns a stable error for non-finite or negative state and elapsed values.
-    pub fn retrievability_at(
-        &self,
-        memory_state: &MemoryState,
-        elapsed_days: f64,
-    ) -> Result<f64, SchedulerError> {
-        if !elapsed_days.is_finite() || elapsed_days.is_sign_negative() {
-            return Err(SchedulerError::new(
-                "invalid_elapsed_days",
-                "elapsed days must be finite and non-negative".to_owned(),
-            ));
-        }
-        let state = to_fsrs_memory_state(memory_state)?;
-        let elapsed_days = fsrs_float(elapsed_days, "invalid_elapsed_days")?;
-        let retrievability =
-            current_retrievability(state, elapsed_days, fsrs_rs::FSRS6_DEFAULT_DECAY);
-        if !retrievability.is_finite() || !(0.0..=1.0).contains(&retrievability) {
-            return Err(SchedulerError::new(
-                "invalid_retrievability",
-                "FSRS produced a retrievability outside the closed probability range".to_owned(),
-            ));
-        }
-        Ok(f64::from(retrievability))
-    }
-
-    /// Calculates recall probability at a later UTC instant.
-    ///
-    /// # Errors
-    ///
-    /// Returns a stable error when evaluation predates the completed review.
     pub fn retrievability_at_time(
         &self,
-        memory_state: &MemoryState,
+        memory: &MemoryState,
         reviewed_at: DateTime<Utc>,
         evaluated_at: DateTime<Utc>,
     ) -> Result<f64, SchedulerError> {
@@ -353,266 +335,140 @@ impl Scheduler {
         if elapsed < Duration::zero() {
             return Err(SchedulerError::new(
                 "evaluation_before_review",
-                "queue evaluation cannot predate the latest review".to_owned(),
+                "queue evaluation cannot predate a review".to_owned(),
             ));
         }
-        let elapsed_days = elapsed
+        let days = elapsed
             .to_std()
-            .map_err(|error| {
+            .map_err(|_| {
                 SchedulerError::new(
                     "evaluation_before_review",
-                    format!("queue evaluation cannot predate the latest review: {error}"),
+                    "queue evaluation cannot predate a review".to_owned(),
                 )
             })?
-            .as_secs_f64()
+            .as_secs_f32()
             / 86_400.0;
-        self.retrievability_at(memory_state, elapsed_days)
+        Ok(f64::from(current_retrievability(
+            to_fsrs_memory_state(memory)?,
+            days,
+            fsrs_rs::FSRS6_DEFAULT_DECAY,
+        )))
     }
-
-    /// Returns the complete active parameter set in stable stored order.
-    #[must_use]
-    pub fn parameter_set(&self) -> &[f64] {
-        &self.parameter_set
-    }
-}
-
-/// Maps a version 1 grading result to its fixed FSRS rating.
-#[must_use]
-pub const fn rating_for_result(result: RepetoReviewRecordInputResult) -> SchedulingInputRating {
-    match result {
-        RepetoReviewRecordInputResult::Correct => SchedulingInputRating::Good,
-        RepetoReviewRecordInputResult::Partial
-        | RepetoReviewRecordInputResult::Incorrect
-        | RepetoReviewRecordInputResult::Assisted => SchedulingInputRating::Again,
-    }
-}
-
-fn rating_for_stored_result(result: RepetoEventPayloadVariant3Result) -> SchedulingInputRating {
-    match result {
-        RepetoEventPayloadVariant3Result::Correct => SchedulingInputRating::Good,
-        RepetoEventPayloadVariant3Result::Partial
-        | RepetoEventPayloadVariant3Result::Incorrect
-        | RepetoEventPayloadVariant3Result::Assisted => SchedulingInputRating::Again,
-    }
-}
-
-const fn stored_fsrs_rating_matches(
-    stored: RepetoEventPayloadVariant3FsrsRating,
-    expected: SchedulingInputRating,
-) -> bool {
-    matches!(
-        (stored, expected),
-        (
-            RepetoEventPayloadVariant3FsrsRating::Again,
-            SchedulingInputRating::Again
-        ) | (
-            RepetoEventPayloadVariant3FsrsRating::Good,
-            SchedulingInputRating::Good
-        )
-    )
-}
-
-fn stored_elapsed_days(value: f64) -> Result<u32, SchedulerError> {
-    if !value.is_finite() || value.is_sign_negative() || value > f64::from(u32::MAX) {
-        return Err(SchedulerError::new(
-            "stored_elapsed_days_invalid",
-            "stored elapsed days are outside the fsrs-rs u32 day range".to_owned(),
-        ));
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "the finite non-negative value is bounded by u32::MAX before conversion"
-    )]
-    let days = value as u32;
-    if f64::from(days).to_bits() != value.to_bits() {
-        return Err(SchedulerError::new(
-            "stored_elapsed_days_invalid",
-            "stored elapsed days must be a whole number for fsrs-rs".to_owned(),
-        ));
-    }
-    Ok(days)
-}
-
-fn same_parameter_set(left: &[f64], right: &[f64]) -> bool {
-    left.len() == right.len()
-        && left.iter().zip(right).all(|(left, right)| {
-            match (
-                fsrs_float(*left, "stored_parameter_set_mismatch"),
-                fsrs_float(*right, "stored_parameter_set_mismatch"),
-            ) {
-                (Ok(left), Ok(right)) => left.to_bits() == right.to_bits(),
-                _ => false,
-            }
-        })
-}
-
-fn same_memory_state(left: &MemoryState, right: &MemoryState) -> bool {
-    same_fsrs_output(left.stability, right.stability)
-        && same_fsrs_output(left.difficulty, right.difficulty)
-}
-
-fn same_fsrs_output(left: f64, right: f64) -> bool {
-    left.is_finite()
-        && right.is_finite()
-        && (left - right).abs() <= FSRS_OUTPUT_TOLERANCE * left.abs().max(right.abs()).max(1.0)
-}
-
-/// Validates the configuration values that pin version 1 scheduling behavior.
-///
-/// # Errors
-///
-/// Returns a stable error instead of accepting an implementation, version,
-/// parameter, retention, or fuzz change as if it were version 1 behavior.
-pub fn validate_configuration(configuration: &RepetoConfiguration) -> Result<(), SchedulerError> {
-    if configuration.desired_retention != DESIRED_RETENTION {
-        return Err(SchedulerError::new(
-            "unsupported_desired_retention",
-            format!(
-                "version 1 requires desired_retention {DESIRED_RETENTION}, got {}",
-                configuration.desired_retention
-            ),
-        ));
-    }
-    if configuration.scheduler.implementation != IMPLEMENTATION {
-        return Err(SchedulerError::new(
-            "unsupported_scheduler_implementation",
-            format!("version 1 requires scheduler implementation {IMPLEMENTATION}"),
-        ));
-    }
-    if configuration.scheduler.version != VERSION {
-        return Err(SchedulerError::new(
-            "unsupported_scheduler_version",
-            format!("version 1 requires scheduler version {VERSION}"),
-        ));
-    }
-    if configuration.fuzz_enabled != false {
-        return Err(SchedulerError::new(
-            "unsupported_fuzz_setting",
-            "version 1 requires fuzz_enabled to be false".to_owned(),
-        ));
-    }
-    validate_parameter_set(&configuration.scheduler.parameters)
-}
-
-fn validate_parameter_set(parameters: &[f64]) -> Result<(), SchedulerError> {
-    if parameters.len() != fsrs_rs::DEFAULT_PARAMETERS.len() {
-        return Err(SchedulerError::new(
-            "unsupported_scheduler_parameters",
-            format!(
-                "version 1 requires {} FSRS parameters, got {}",
-                fsrs_rs::DEFAULT_PARAMETERS.len(),
-                parameters.len()
-            ),
-        ));
-    }
-    for (index, (actual, expected)) in parameters
-        .iter()
-        .zip(fsrs_rs::DEFAULT_PARAMETERS.iter())
-        .enumerate()
-    {
-        if fsrs_float(*actual, "unsupported_scheduler_parameters")?.to_bits() != expected.to_bits()
-        {
-            return Err(SchedulerError::new(
-                "unsupported_scheduler_parameters",
-                format!("scheduler parameter {index} differs from the pinned default set"),
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn elapsed_whole_days(
-    prior_memory_state: Option<&MemoryState>,
-    prior_reviewed_at: Option<DateTime<Utc>>,
+    prior: Option<&MemoryState>,
+    prior_at: Option<DateTime<Utc>>,
     reviewed_at: DateTime<Utc>,
 ) -> Result<u32, SchedulerError> {
-    match (prior_memory_state, prior_reviewed_at) {
+    match (prior, prior_at) {
         (None, None) => Ok(0),
         (Some(_), Some(previous)) => {
             let elapsed = reviewed_at.signed_duration_since(previous);
             if elapsed < Duration::zero() {
                 return Err(SchedulerError::new(
                     "review_before_previous_review",
-                    "a review cannot predate its previous review".to_owned(),
+                    "a review cannot predate the prior review".to_owned(),
                 ));
             }
-            let days = elapsed.num_days();
-            u32::try_from(days).map_err(|error| {
+            u32::try_from(elapsed.num_days()).map_err(|_| {
                 SchedulerError::new(
                     "elapsed_days_overflow",
-                    format!("elapsed review time exceeds FSRS limits: {error}"),
+                    "the review gap exceeds the scheduler range".to_owned(),
                 )
             })
         }
         _ => Err(SchedulerError::new(
             "incomplete_prior_review",
-            "prior memory state and prior review time must either both exist or both be absent"
-                .to_owned(),
+            "a prior memory state and timestamp must appear together".to_owned(),
         )),
     }
 }
-
-fn to_fsrs_memory_state(memory_state: &MemoryState) -> Result<FsrsMemoryState, SchedulerError> {
-    if !memory_state.stability.is_finite()
-        || !memory_state.difficulty.is_finite()
-        || memory_state.stability.is_sign_negative()
-        || memory_state.difficulty.is_sign_negative()
-    {
-        return Err(SchedulerError::new(
-            "invalid_memory_state",
-            "memory stability and difficulty must be finite and non-negative".to_owned(),
-        ));
-    }
-    let stability = fsrs_float(memory_state.stability, "invalid_memory_state")?;
-    let difficulty = fsrs_float(memory_state.difficulty, "invalid_memory_state")?;
+fn to_fsrs_memory_state(v: &MemoryState) -> Result<FsrsMemoryState, SchedulerError> {
     Ok(FsrsMemoryState {
-        stability,
-        difficulty,
+        stability: canonical_f32(v.stability, "invalid_memory_state")?,
+        difficulty: canonical_f32(v.difficulty, "invalid_memory_state")?,
     })
 }
-
-fn from_fsrs_memory_state(memory_state: FsrsMemoryState) -> MemoryState {
-    MemoryState {
-        stability: f64::from(memory_state.stability),
-        difficulty: f64::from(memory_state.difficulty),
+fn memory_state(v: &Value) -> Result<Option<MemoryState>, SchedulerError> {
+    if v.is_null() {
+        return Ok(None);
     }
+    let stability = v
+        .get("stability")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| mismatch("input.prior_memory_state.stability"))?;
+    let difficulty = v
+        .get("difficulty")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| mismatch("input.prior_memory_state.difficulty"))?;
+    Ok(Some(MemoryState {
+        stability: f64::from(canonical_f32(stability, "stored_scheduling_mismatch")?),
+        difficulty: f64::from(canonical_f32(difficulty, "stored_scheduling_mismatch")?),
+    }))
 }
-
-fn interval_days(interval: f32) -> Result<u32, SchedulerError> {
-    if !interval.is_finite() || interval.is_sign_negative() {
-        return Err(SchedulerError::new(
-            "invalid_interval",
-            "FSRS produced a non-finite or negative interval".to_owned(),
-        ));
-    }
-    let rounded = interval.round().max(1.0);
-    if rounded >= 4_294_967_296.0 {
-        return Err(SchedulerError::new(
-            "interval_overflow",
-            "FSRS produced an interval beyond the supported day range".to_owned(),
-        ));
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "the value is finite, non-negative, rounded, and below 2^32"
-    )]
-    let interval_days = rounded as u32;
-    Ok(interval_days)
-}
-
-fn fsrs_float(value: f64, code: &'static str) -> Result<f32, SchedulerError> {
-    if !value.is_finite() || value.abs() > f64::from(f32::MAX) {
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the exact widening check rejects lossy scheduler values"
+)]
+fn canonical_f32(v: f64, code: &'static str) -> Result<f32, SchedulerError> {
+    let narrowed = v as f32;
+    if !v.is_finite() || !narrowed.is_finite() || f64::from(narrowed).to_bits() != v.to_bits() {
         return Err(SchedulerError::new(
             code,
-            "value exceeds the finite FSRS f32 numeric range".to_owned(),
+            "a scheduler numeric value must be a canonical finite f32".to_owned(),
         ));
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "fsrs-rs 6.6.2 accepts f32; the range is validated before conversion"
-    )]
-    let value = value as f32;
-    Ok(value)
+    Ok(narrowed)
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "configuration values are deliberately narrowed to the f32 values consumed by FSRS"
+)]
+fn finite_f32(v: f64, code: &'static str) -> Result<f32, SchedulerError> {
+    let narrowed = v as f32;
+    if !v.is_finite() || !narrowed.is_finite() {
+        return Err(SchedulerError::new(
+            code,
+            "a scheduler numeric value must be finite".to_owned(),
+        ));
+    }
+    Ok(narrowed)
+}
+fn value_f32_bits(v: &Value) -> Result<u32, SchedulerError> {
+    canonical_f32(
+        v.as_f64().ok_or_else(|| mismatch("numeric"))?,
+        "stored_scheduling_mismatch",
+    )
+    .map(f32::to_bits)
+}
+fn mismatch(field: &'static str) -> SchedulerError {
+    SchedulerError::with_details(
+        "stored_scheduling_mismatch",
+        format!("stored scheduling differs at {field}"),
+        json!({ "field": field }),
+    )
+}
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "finite nonnegative rounded FSRS intervals are bounded before conversion"
+)]
+fn interval_days(v: f32) -> Result<u32, SchedulerError> {
+    if !v.is_finite() || !(0.0..=4_294_967_000.0).contains(&v) {
+        return Err(SchedulerError::new(
+            "invalid_interval",
+            "fsrs-rs produced an invalid interval".to_owned(),
+        ));
+    }
+    Ok(v.round() as u32)
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "FSRS accepts elapsed intervals as f32"
+)]
+fn interval_to_f32(interval: u32) -> f32 {
+    interval as f32
 }

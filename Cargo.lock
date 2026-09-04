@@ -1196,6 +1196,7 @@ dependencies = [
  "fsrs",
  "jsonschema",
  "regress",
+ "repeto-assessment",
  "serde",
  "serde_json",
  "serde_yaml_ng",

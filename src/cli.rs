@@ -132,9 +132,6 @@ pub struct ReviewRecordArgs {
     /// JSON/YAML input path, or `-` for JSON standard input.
     #[arg(long)]
     pub input: String,
-    /// Use this RFC 3339 UTC timestamp.
-    #[arg(long)]
-    pub at: Option<String>,
 }
 
 /// A stable machine-readable CLI error.
@@ -175,13 +172,13 @@ from_domain_error!(EventStoreError);
 
 impl From<SchedulerError> for CliError {
     fn from(error: SchedulerError) -> Self {
-        Self::new(error.code, error.message, Value::Null)
+        Self::new(error.code, error.message, error.details)
     }
 }
 
 impl From<QueueError> for CliError {
     fn from(error: QueueError) -> Self {
-        Self::new(error.code, error.message, Value::Null)
+        Self::new(error.code, error.message, error.details)
     }
 }
 

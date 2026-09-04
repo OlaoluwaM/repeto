@@ -101,8 +101,12 @@ pub struct Catalogue {
     pub configuration: RepetoConfiguration,
     /// Parsed target definitions indexed by ID.
     pub targets: BTreeMap<String, RepetoTargetDefinition>,
-    /// Parsed events in persisted JSONL order.
-    pub events: Vec<RepetoEvent>,
+    /// Schema-validated events in their persisted JSON representation and order.
+    ///
+    /// Generated event types are deliberately checked while loading but are not
+    /// authoritative here: flattened generated `oneOf` payloads are not
+    /// lossless for every event shape, while replay must preserve exact v1 JSON.
+    pub events: Vec<Value>,
 }
 
 /// Parses YAML into JSON so it can pass through the same schema boundary as JSON input.
@@ -371,10 +375,9 @@ pub fn load_catalogue(data_directory: &Path) -> Result<Catalogue, ValidationErro
             parse_document(SchemaKind::Target, target_file.document)?;
         targets.insert(id, target);
     }
-    let events = events
-        .into_iter()
-        .map(|event| parse_document(SchemaKind::Event, event))
-        .collect::<Result<Vec<RepetoEvent>, _>>()?;
+    for event in &events {
+        let _: RepetoEvent = parse_document(SchemaKind::Event, event.clone())?;
+    }
 
     Ok(Catalogue {
         configuration,
@@ -1004,7 +1007,7 @@ fn validate_review_payload(
         .ok_or_else(|| invalid_event_payload("review_completed"))?;
     if !reviewed_sessions.insert((target_id.to_owned(), session_id.to_owned())) {
         return Err(ValidationError::new(
-            "duplicate_review_session",
+            "duplicate_effective_review_session",
             "a target can have only one review per session ID",
             json!({ "target_id": target_id, "session_id": session_id }),
         ));

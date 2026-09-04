@@ -303,7 +303,7 @@ fn rejects_duplicate_reviews_for_one_target_and_session() {
     let error =
         validate_catalogue(&configuration(), &[target_file(target())], &events).unwrap_err();
 
-    assert_eq!(error.code, "duplicate_review_session");
+    assert_eq!(error.code, "duplicate_effective_review_session");
 }
 
 #[test]
