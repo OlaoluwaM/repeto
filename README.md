@@ -15,10 +15,10 @@ This repository does not keep another glossary.
 
 ## Status
 
-The 2026-09-04 version 1 redesign is approved and implementation is in
-progress. The checked-out code still contains parts of the older review model.
-Do not treat the redesign as live until all checks and one real Daily Review
-pass.
+The 2026-09-04 version 1 implementation is complete and passes its automated
+checks plus a read-only check of the fresh curriculum. Do not treat the new
+system as accepted live until agent-context pins a reviewed commit and one real
+Daily Review passes.
 
 ## Development
 
@@ -156,6 +156,11 @@ never rewritten by replay.
 
 Maps and order-independent sets use ordered Rust collections. Repeto does not
 implement a general canonical-JSON layer.
+
+Catalogue loading checks each event against both the JSON Schema and its
+generated Rust type. Replay then uses the original validated JSON value. This
+avoids losing fields when generated flattened union types are serialized again;
+it does not bypass either validation check.
 
 ## Future enhancements
 
