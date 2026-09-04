@@ -192,7 +192,9 @@ fn source_note_paths_report_every_failure_in_deterministic_order() {
     let failures = error.details["failures"].as_array().unwrap();
     assert_eq!(failures.len(), files.len());
     for window in failures.windows(2) {
-        assert!(window[0].to_string() <= window[1].to_string());
+        let left = window[0].to_string();
+        let right = window[1].to_string();
+        assert!(left <= right);
     }
     for (id, path, reason) in invalid_paths {
         assert!(failures.iter().any(|failure| {

@@ -2,43 +2,43 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:repeto:schema:v1:review-record-input",
   "title": "RepetoReviewRecordInput",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "schema_version",
-    "target_id",
-    "session_id",
-    "occurred_at",
-    "assessment",
-    "metadata"
-  ],
-  "properties": {
-    "schema_version": { "const": 1 },
-    "target_id": { "$ref": "#/$defs/NonBlankString" },
-    "session_id": { "$ref": "#/$defs/NonBlankString" },
-    "occurred_at": { "$ref": "#/$defs/ReviewInputUtcMillisecondTimestamp" },
-    "assessment": { "$ref": "#/$defs/ReviewInputAssessment" },
-    "confidence": { "type": "string", "enum": ["sure", "shaky", "guessing"] },
-    "metadata": { "$ref": "#/$defs/ReviewInputMetadata" }
-  },
   "oneOf": [
     {
-      "required": ["confidence"],
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "target_id", "session_id", "occurred_at", "assessment", "confidence", "metadata"],
       "properties": {
+        "schema_version": { "const": 1 },
+        "target_id": { "$ref": "#/$defs/NonBlankString" },
+        "session_id": { "$ref": "#/$defs/NonBlankString" },
+        "occurred_at": { "$ref": "#/$defs/ReviewInputUtcMillisecondTimestamp" },
         "assessment": { "$ref": "#/$defs/ReviewInputIndependentAssessment" },
+        "confidence": { "type": "string", "enum": ["sure", "shaky", "guessing"] },
         "metadata": { "$ref": "#/$defs/ReviewInputMetadataWithAnswer" }
       }
     },
     {
-      "not": { "required": ["confidence"] },
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "target_id", "session_id", "occurred_at", "assessment", "metadata"],
       "properties": {
+        "schema_version": { "const": 1 },
+        "target_id": { "$ref": "#/$defs/NonBlankString" },
+        "session_id": { "$ref": "#/$defs/NonBlankString" },
+        "occurred_at": { "$ref": "#/$defs/ReviewInputUtcMillisecondTimestamp" },
         "assessment": { "$ref": "#/$defs/ReviewInputAssistedAssessment" },
         "metadata": { "$ref": "#/$defs/ReviewInputMetadataWithAnswer" }
       }
     },
     {
-      "not": { "required": ["confidence"] },
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "target_id", "session_id", "occurred_at", "assessment", "metadata"],
       "properties": {
+        "schema_version": { "const": 1 },
+        "target_id": { "$ref": "#/$defs/NonBlankString" },
+        "session_id": { "$ref": "#/$defs/NonBlankString" },
+        "occurred_at": { "$ref": "#/$defs/ReviewInputUtcMillisecondTimestamp" },
         "assessment": { "$ref": "#/$defs/ReviewInputNoAnswerAssessment" },
         "metadata": { "$ref": "#/$defs/ReviewInputMetadataWithoutAnswer" }
       }

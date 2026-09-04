@@ -2,7 +2,9 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env, fmt, fs,
+    env,
+    ffi::OsStr,
+    fmt, fs,
     path::{Path, PathBuf},
 };
 
@@ -453,10 +455,9 @@ pub fn expand_source_note_root(value: &str) -> Result<PathBuf, ValidationError> 
             characters.next();
             let start = characters
                 .peek()
-                .map(|(position, _)| *position)
-                .unwrap_or(value.len());
+                .map_or(value.len(), |(position, _)| *position);
             let mut end = None;
-            while let Some((position, current)) = characters.next() {
+            for (position, current) in characters.by_ref() {
                 if current == '}' {
                     end = Some(position);
                     break;
@@ -476,8 +477,7 @@ pub fn expand_source_note_root(value: &str) -> Result<PathBuf, ValidationError> 
             }
             let start = characters
                 .peek()
-                .map(|(position, _)| *position)
-                .unwrap_or(value.len());
+                .map_or(value.len(), |(position, _)| *position);
             let mut end = value.len();
             while let Some((position, current)) = characters.peek().copied() {
                 if !is_environment_name_continue(current) {
@@ -527,7 +527,7 @@ pub fn validate_source_note_paths(
     let root_value = configuration
         .get("source_note_root")
         .and_then(Value::as_str)
-        .ok_or_else(|| invalid_source_note_root("missing", Value::Null))?;
+        .ok_or_else(|| invalid_source_note_root("missing", &Value::Null))?;
     let root = expand_source_note_root(root_value)?;
     let canonical_root = canonical_source_note_root(&root, root_value)?;
     let mut failures = Vec::new();
@@ -551,7 +551,7 @@ pub fn validate_source_note_paths(
             }
         }
     }
-    failures.sort_by(|left, right| left.to_string().cmp(&right.to_string()));
+    failures.sort_by_key(Value::to_string);
     if failures.is_empty() {
         Ok(())
     } else {
@@ -589,25 +589,25 @@ fn canonical_source_note_root(root: &Path, stored_root: &str) -> Result<PathBuf,
     if !root.is_absolute() {
         return Err(invalid_source_note_root(
             "not_absolute",
-            json!({ "source_note_root": stored_root }),
+            &json!({ "source_note_root": stored_root }),
         ));
     }
     let canonical_root = fs::canonicalize(root).map_err(|error| {
         invalid_source_note_root(
             "not_found",
-            json!({ "source_note_root": stored_root, "error": error.to_string() }),
+            &json!({ "source_note_root": stored_root, "error": error.to_string() }),
         )
     })?;
     if !canonical_root.is_dir() {
         return Err(invalid_source_note_root(
             "not_directory",
-            json!({ "source_note_root": stored_root }),
+            &json!({ "source_note_root": stored_root }),
         ));
     }
     Ok(canonical_root)
 }
 
-fn invalid_source_note_root(reason: &str, details: Value) -> ValidationError {
+fn invalid_source_note_root(reason: &str, details: &Value) -> ValidationError {
     ValidationError::new(
         "invalid_source_note_root",
         "source_note_root is not an existing absolute directory",
@@ -635,7 +635,7 @@ fn is_vault_relative_markdown_path(path: &str) -> bool {
         && !path.starts_with('/')
         && !path.ends_with('/')
         && !path.contains('\\')
-        && path.ends_with(".md")
+        && Path::new(path).extension() == Some(OsStr::new("md"))
         && path
             .split('/')
             .all(|component| !component.is_empty() && component != "." && component != "..")
