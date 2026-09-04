@@ -54,8 +54,8 @@
         checkPhase = ''
           runHook preCheck
           cargo fmt --all -- --check
-          cargo clippy --all-targets --all-features --locked -- -D warnings
-          cargo test --all-targets --all-features --locked
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          cargo test --workspace --all-targets --all-features --locked
           runHook postCheck
         '';
       };

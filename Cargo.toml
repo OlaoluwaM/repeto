@@ -1,3 +1,7 @@
+[workspace]
+members = ["crates/repeto-assessment"]
+resolver = "3"
+
 [package]
 name = "repeto"
 version = "0.1.0"
