@@ -851,3 +851,66 @@ fn replay_recomputes_scheduler_integrity_without_rewriting_stored_output() {
         }
     }
 }
+
+#[test]
+fn queue_policy_upgrade_changes_selection_without_rewriting_reviews() {
+    let data = setup();
+    activate(data.path());
+    let input = write_review(
+        data.path(),
+        &review(true, "initial", "2026-09-02T12:00:00.000Z"),
+    );
+    assert_ok(data.path(), &["review", "record", "--input", &input]);
+    let mut fresh: Value = serde_yaml::from_str(
+        &fs::read_to_string(data.path().join("targets/target.yaml")).expect("target"),
+    )
+    .expect("target YAML");
+    fresh["id"] = json!("fresh");
+    fs::write(
+        data.path().join("targets/fresh.yaml"),
+        serde_yaml::to_string(&fresh).expect("target YAML"),
+    )
+    .expect("fresh target");
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "activate",
+            "fresh",
+            "--at",
+            "2026-09-02T12:00:00.000Z",
+        ],
+    );
+    let events_before = fs::read(data.path().join("events.jsonl")).expect("event history");
+    let args = ["queue", "--limit", "1", "--at", "2026-10-01T12:00:00.000Z"];
+    let old = assert_ok(data.path(), &args);
+    assert_eq!(old["recommended_targets"][0]["target_id"], "target");
+    let config_path = data.path().join("config.yaml");
+    let mut config: Value =
+        serde_yaml::from_str(&fs::read_to_string(&config_path).expect("config"))
+            .expect("config YAML");
+    config["queue_priority_policy_version"] = json!(2);
+    fs::write(
+        config_path,
+        serde_yaml::to_string(&config).expect("config YAML"),
+    )
+    .expect("upgraded config");
+    assert_ok(data.path(), &["check"]);
+    let new = assert_ok(data.path(), &args);
+    assert_eq!(new["recommended_targets"][0]["target_id"], "fresh");
+    assert_eq!(
+        new["recommended_targets"][0]["rank_details"]["reason"],
+        "new_bootstrap"
+    );
+    assert_eq!(new["remaining_eligible_targets"][0]["target_id"], "target");
+    let pair = assert_ok(
+        data.path(),
+        &["queue", "--limit", "2", "--at", "2026-10-01T12:00:00.000Z"],
+    );
+    assert_eq!(pair["recommended_targets"][0]["target_id"], "target");
+    assert_eq!(pair["recommended_targets"][1]["target_id"], "fresh");
+    assert_eq!(
+        events_before,
+        fs::read(data.path().join("events.jsonl")).expect("unchanged event history")
+    );
+}

@@ -34,7 +34,7 @@
     },
     "fuzz_enabled": { "const": false },
     "default_recommended_target_count": { "type": "integer", "minimum": 1 },
-    "queue_priority_policy_version": { "const": 1 }
+    "queue_priority_policy_version": { "type": "integer", "minimum": 1, "maximum": 2 }
   },
   "$defs": {
     "NonBlankString": {

@@ -124,7 +124,12 @@ pub fn build_queue(
     let due_count = due.len();
     let bootstrap_count = fresh.len();
     let mut eligible = due.into_iter().map(DueTarget::ranked).collect::<Vec<_>>();
-    eligible.extend(bootstrap(fresh));
+    let fresh = bootstrap(fresh);
+    if configuration.queue_priority_policy_version.get() == 2 {
+        eligible = allocate_first_reviews(eligible, fresh, selected_limit);
+    } else {
+        eligible.extend(fresh);
+    }
     rank(&mut eligible);
     let remaining_eligible_targets = if selected_limit >= eligible.len() {
         Vec::new()
@@ -139,6 +144,26 @@ pub fn build_queue(
         recommended_targets: eligible,
         remaining_eligible_targets,
     })
+}
+
+fn allocate_first_reviews(
+    mut due: Vec<RankedTarget>,
+    mut fresh: Vec<RankedTarget>,
+    limit: usize,
+) -> Vec<RankedTarget> {
+    let count = limit.min(due.len() + fresh.len());
+    // Round one third to the nearest target, with first-review priority for
+    // single-target sessions and an even split for two-target sessions.
+    let first_quota = (count / 3 + usize::from(count % 3 == 2)).max(1);
+    let first_count = first_quota
+        .min(fresh.len())
+        .max(count.saturating_sub(due.len()));
+    let remaining_due = due.split_off(count - first_count);
+    let remaining_fresh = fresh.split_off(first_count);
+    due.extend(fresh);
+    due.extend(remaining_due);
+    due.extend(remaining_fresh);
+    due
 }
 
 fn explicit_queue(

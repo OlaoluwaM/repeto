@@ -112,6 +112,13 @@ repeto --data-dir "$REPETO_DATA_DIR" queue \
 An exact active `--target ID` can select an early target or one with
 `needs_study`. Topic filters keep normal eligibility.
 
+Set `queue_priority_policy_version: 2` to use the agreed
+[first-review allocation](../../agent-context/Protocols/Study%20System/README.md#queue-policy).
+Version 1 remains supported with its original due-first ordering. Use `--limit N`
+for the actual session size: truncating a larger recommendation does not apply
+the smaller session's allocation. Upgrade the executable before changing the
+configuration; older builds accept only policy 1.
+
 Inspect one target before a prompt:
 
 ```sh

@@ -373,3 +373,238 @@ fn assert_error_unavailable(targets: &[QueueTarget<'_>], id: &str) {
         "explicit_target_unavailable"
     );
 }
+
+fn mixed_config() -> RepetoConfiguration {
+    let mut value = serde_json::to_value(config()).expect("configuration JSON");
+    value["queue_priority_policy_version"] = json!(2);
+    parse_document(SchemaKind::Configuration, value).expect("mixed queue configuration")
+}
+
+fn mixed_queue(due_count: usize, first_count: usize, limit: usize) -> repeto::queue::QueueOutput {
+    let review = due_review(2.3, None, "correct");
+    let due_ids = (0..due_count)
+        .map(|i| format!("due-{i:02}"))
+        .collect::<Vec<_>>();
+    let first_ids = (0..first_count)
+        .map(|i| format!("first-{i:02}"))
+        .collect::<Vec<_>>();
+    let targets = due_ids
+        .iter()
+        .map(|id| QueueTarget {
+            id,
+            topic: "Rust",
+            lifecycle_state: LifecycleState::Active,
+            needs_study: false,
+            latest_review: Some(&review),
+        })
+        .chain(first_ids.iter().map(|id| QueueTarget {
+            id,
+            topic: "Rust",
+            lifecycle_state: LifecycleState::Active,
+            needs_study: false,
+            latest_review: None,
+        }))
+        .collect::<Vec<_>>();
+    build_queue(
+        &mixed_config(),
+        &targets,
+        QueueRequest {
+            evaluated_at: now(),
+            topic: None,
+            target_id: None,
+            limit: NonZeroUsize::new(limit),
+        },
+    )
+    .expect("mixed queue")
+}
+
+#[test]
+fn mixed_queue_reserves_first_reviews_for_each_session_size() {
+    for (limit, expected_first) in [
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (3, 1),
+        (4, 1),
+        (5, 2),
+        (6, 2),
+        (7, 2),
+        (8, 3),
+        (9, 3),
+        (10, 3),
+    ] {
+        let output = mixed_queue(12, 12, limit);
+        assert_eq!(
+            output.recommended_targets.len(),
+            if limit == 0 { 3 } else { limit }
+        );
+        assert_eq!(
+            output
+                .recommended_targets
+                .iter()
+                .filter(|t| t.rank_details.reason == QueueRankReason::NewBootstrap)
+                .count(),
+            expected_first,
+            "limit {limit}"
+        );
+        assert_eq!(output.due_count, 12);
+        assert_eq!(output.bootstrap_count, 12);
+    }
+}
+
+#[test]
+fn mixed_queue_fills_shortages_without_losing_or_duplicating_targets() {
+    for (due, first, limit, expected_first) in [
+        (0, 0, 3, 0),
+        (0, 4, 3, 3),
+        (4, 0, 3, 0),
+        (4, 0, 1, 0),
+        (0, 4, 1, 1),
+        (1, 8, 6, 5),
+        (8, 1, 6, 1),
+        (1, 1, 10, 1),
+        (2, 2, usize::MAX, 2),
+    ] {
+        let output = mixed_queue(due, first, limit);
+        assert_eq!(output.recommended_targets.len(), limit.min(due + first));
+        assert_eq!(
+            output
+                .recommended_targets
+                .iter()
+                .filter(|t| t.rank_details.reason == QueueRankReason::NewBootstrap)
+                .count(),
+            expected_first
+        );
+        let all = output
+            .recommended_targets
+            .iter()
+            .chain(&output.remaining_eligible_targets)
+            .collect::<Vec<_>>();
+        assert_eq!(all.len(), due + first);
+        let ids = all
+            .iter()
+            .map(|t| &t.target_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids.len(), due + first);
+        for (index, target) in all.iter().enumerate() {
+            assert_eq!(target.rank, index + 1);
+        }
+    }
+}
+
+#[test]
+fn mixed_queue_preserves_group_priorities_and_stable_output() {
+    let urgent = due_review(1.0, None, "correct");
+    let later = due_review(4.0, None, "correct");
+    let target = |id, topic, latest_review| QueueTarget {
+        id,
+        topic,
+        lifecycle_state: LifecycleState::Active,
+        needs_study: false,
+        latest_review,
+    };
+    let mut targets = vec![
+        target("b-2", "b", None),
+        target("later", "a", Some(&later)),
+        target("a-2", "a", None),
+        target("urgent", "b", Some(&urgent)),
+        target("b-1", "b", None),
+        target("a-1", "a", None),
+    ];
+    let request = QueueRequest {
+        evaluated_at: now(),
+        topic: None,
+        target_id: None,
+        limit: NonZeroUsize::new(3),
+    };
+    let output = build_queue(&mixed_config(), &targets, request).expect("mixed queue");
+    assert_eq!(
+        output
+            .recommended_targets
+            .iter()
+            .map(|t| t.target_id.as_str())
+            .collect::<Vec<_>>(),
+        ["urgent", "later", "a-1"]
+    );
+    assert_eq!(
+        output
+            .remaining_eligible_targets
+            .iter()
+            .map(|t| t.target_id.as_str())
+            .collect::<Vec<_>>(),
+        ["b-1", "a-2", "b-2"]
+    );
+    let first = serde_json::to_vec(&output).expect("queue JSON");
+    targets.reverse();
+    let second = build_queue(&mixed_config(), &targets, request).expect("permuted queue");
+    assert_eq!(first, serde_json::to_vec(&second).expect("queue JSON"));
+}
+
+#[test]
+fn mixed_queue_filters_before_allocation_and_preserves_explicit_overrides() {
+    let due = due_review(2.3, None, "correct");
+    let mut early = due.clone();
+    early.due_at = now() + Duration::days(1);
+    let target = |id, topic, lifecycle_state, needs_study, latest_review| QueueTarget {
+        id,
+        topic,
+        lifecycle_state,
+        needs_study,
+        latest_review,
+    };
+    let targets = [
+        target("due", "Rust", LifecycleState::Active, false, Some(&due)),
+        target("first", "Rust", LifecycleState::Active, false, None),
+        target("other", "Other", LifecycleState::Active, false, None),
+        target("draft", "Rust", LifecycleState::Draft, false, None),
+        target("paused", "Rust", LifecycleState::Paused, false, None),
+        target("retired", "Rust", LifecycleState::Retired, false, None),
+        target("study", "Rust", LifecycleState::Active, true, Some(&early)),
+        target("early", "Rust", LifecycleState::Active, false, Some(&early)),
+    ];
+    let request = QueueRequest {
+        evaluated_at: now(),
+        topic: Some("Rust"),
+        target_id: None,
+        limit: NonZeroUsize::new(1),
+    };
+    let output = build_queue(&mixed_config(), &targets, request).expect("filtered mixed queue");
+    assert_eq!(output.due_count, 1);
+    assert_eq!(output.bootstrap_count, 1);
+    assert_eq!(output.recommended_targets[0].target_id, "first");
+    assert_eq!(output.remaining_eligible_targets.len(), 1);
+    assert_eq!(output.remaining_eligible_targets[0].target_id, "due");
+    for id in ["due", "early", "study"] {
+        let output = build_queue(
+            &mixed_config(),
+            &targets,
+            QueueRequest {
+                target_id: Some(id),
+                ..request
+            },
+        )
+        .expect("explicit selection");
+        assert_eq!(output.recommended_targets[0].target_id, id);
+        assert_eq!(
+            output.recommended_targets[0].rank_details.reason,
+            QueueRankReason::ExplicitTarget
+        );
+        assert_eq!(
+            output.recommended_targets[0].rank_details.early,
+            id != "due"
+        );
+        assert_eq!(
+            output.recommended_targets[0].rank_details.needs_study,
+            id == "study"
+        );
+    }
+}
+
+#[test]
+fn queue_policy_configuration_rejects_unsupported_versions() {
+    for version in [json!(0), json!(3), json!(1.5), json!("2")] {
+        let mut value = serde_json::to_value(config()).expect("configuration JSON");
+        value["queue_priority_policy_version"] = version;
+        assert!(parse_document::<RepetoConfiguration>(SchemaKind::Configuration, value).is_err());
+    }
+}
