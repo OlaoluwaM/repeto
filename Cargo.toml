@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/repeto-assessment"]
+default-members = [".", "crates/repeto-assessment"]
 resolver = "3"
 
 [package]
