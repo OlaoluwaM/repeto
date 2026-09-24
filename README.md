@@ -119,6 +119,14 @@ for the actual session size: truncating a larger recommendation does not apply
 the smaller session's allocation. Upgrade the executable before changing the
 configuration; older builds accept only policy 1.
 
+Set `queue_priority_policy_version: 3` to keep policy 2's
+[first-review allocation](../../agent-context/Protocols/Study%20System/README.md#queue-policy)
+and also hold a target back from normal queues until 12 hours after its
+latest review, so a same-evening session cannot retest a correction just
+taught. An exact `--target ID` still selects a held-back target directly and
+reports it as `early`. Upgrade the executable before setting this
+configuration; older builds reject policy 3.
+
 Inspect one target before a prompt:
 
 ```sh

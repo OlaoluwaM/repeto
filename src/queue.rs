@@ -7,7 +7,7 @@
 
 use std::{cmp::Ordering, collections::BTreeMap, num::NonZeroUsize};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -84,6 +84,9 @@ pub struct QueueOutput {
     pub remaining_eligible_targets: Vec<RankedTarget>,
 }
 
+// Policy 3 holds a target back from the normal queue until this long after its latest review.
+const POLICY_3_REVIEW_HOLD: Duration = Duration::hours(12);
+
 pub fn build_queue(
     configuration: &RepetoConfiguration,
     targets: &[QueueTarget<'_>],
@@ -98,8 +101,15 @@ pub fn build_queue(
             details: Value::Null,
         })?;
     let selected_limit = request.limit.map_or(default_limit, NonZeroUsize::get);
+    let policy_version = configuration.queue_priority_policy_version.get();
     if let Some(id) = request.target_id {
-        return explicit_queue(targets, request, id, configured_recommended_count);
+        return explicit_queue(
+            targets,
+            request,
+            id,
+            configured_recommended_count,
+            policy_version,
+        );
     }
     let mut due = Vec::new();
     let mut fresh = Vec::new();
@@ -112,13 +122,17 @@ pub fn build_queue(
             continue;
         }
         match target.latest_review {
-            Some(review) if review.due_at <= request.evaluated_at => due.push(due_target(
-                &scheduler,
-                target,
-                review,
-                request.evaluated_at,
-            )?),
-            Some(_) => {}
+            Some(review) => {
+                let effective_due = effective_due_at(policy_version, review)?;
+                if effective_due <= request.evaluated_at {
+                    due.push(due_target(
+                        &scheduler,
+                        target,
+                        review,
+                        request.evaluated_at,
+                    )?);
+                }
+            }
             None => fresh.push(target),
         }
     }
@@ -127,7 +141,7 @@ pub fn build_queue(
     let bootstrap_count = fresh.len();
     let mut eligible = due.into_iter().map(DueTarget::ranked).collect::<Vec<_>>();
     let fresh = bootstrap(fresh);
-    if configuration.queue_priority_policy_version.get() == 2 {
+    if policy_version >= 2 {
         eligible = allocate_first_reviews(eligible, fresh, selected_limit);
     } else {
         eligible.extend(fresh);
@@ -168,11 +182,33 @@ fn allocate_first_reviews(
     due
 }
 
+/// Under policy 3, the effective due time is the later of the stored
+/// `due_at` and 12 hours after the latest review. Earlier policies use the
+/// stored `due_at` unchanged.
+fn effective_due_at(
+    policy_version: u64,
+    review: &LatestReview,
+) -> Result<DateTime<Utc>, QueueError> {
+    if policy_version < 3 {
+        return Ok(review.due_at);
+    }
+    let hold_until = review
+        .reviewed_at
+        .checked_add_signed(POLICY_3_REVIEW_HOLD)
+        .ok_or_else(|| QueueError {
+            code: "due_time_overflow",
+            message: "the policy-3 review hold exceeds the timestamp range".to_owned(),
+            details: Value::Null,
+        })?;
+    Ok(review.due_at.max(hold_until))
+}
+
 fn explicit_queue(
     targets: &[QueueTarget<'_>],
     request: QueueRequest<'_>,
     id: &str,
     configured_recommended_count: u64,
+    policy_version: u64,
 ) -> Result<QueueOutput, QueueError> {
     let target = targets
         .iter()
@@ -183,9 +219,10 @@ fn explicit_queue(
             message: "the requested target is not active".to_owned(),
             details: Value::Null,
         })?;
-    let early = target
-        .latest_review
-        .is_some_and(|review| review.due_at > request.evaluated_at);
+    let early = match target.latest_review {
+        Some(review) => effective_due_at(policy_version, review)? > request.evaluated_at,
+        None => false,
+    };
     let ranked = RankedTarget {
         rank: 1,
         target_id: target.id.to_owned(),

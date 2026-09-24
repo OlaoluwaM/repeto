@@ -374,13 +374,22 @@ fn assert_error_unavailable(targets: &[QueueTarget<'_>], id: &str) {
     );
 }
 
-fn mixed_config() -> RepetoConfiguration {
+fn config_with_policy(version: u64) -> RepetoConfiguration {
     let mut value = serde_json::to_value(config()).expect("configuration JSON");
-    value["queue_priority_policy_version"] = json!(2);
-    parse_document(SchemaKind::Configuration, value).expect("mixed queue configuration")
+    value["queue_priority_policy_version"] = json!(version);
+    parse_document(SchemaKind::Configuration, value).expect("queue configuration")
 }
 
-fn mixed_queue(due_count: usize, first_count: usize, limit: usize) -> repeto::queue::QueueOutput {
+fn mixed_config() -> RepetoConfiguration {
+    config_with_policy(2)
+}
+
+fn mixed_queue_with_policy(
+    due_count: usize,
+    first_count: usize,
+    limit: usize,
+    policy_version: u64,
+) -> repeto::queue::QueueOutput {
     let review = due_review(2.3, None, "correct");
     let due_ids = (0..due_count)
         .map(|i| format!("due-{i:02}"))
@@ -406,7 +415,7 @@ fn mixed_queue(due_count: usize, first_count: usize, limit: usize) -> repeto::qu
         }))
         .collect::<Vec<_>>();
     build_queue(
-        &mixed_config(),
+        &config_with_policy(policy_version),
         &targets,
         QueueRequest {
             evaluated_at: now(),
@@ -416,6 +425,10 @@ fn mixed_queue(due_count: usize, first_count: usize, limit: usize) -> repeto::qu
         },
     )
     .expect("mixed queue")
+}
+
+fn mixed_queue(due_count: usize, first_count: usize, limit: usize) -> repeto::queue::QueueOutput {
+    mixed_queue_with_policy(due_count, first_count, limit, 2)
 }
 
 #[test]
@@ -602,9 +615,160 @@ fn mixed_queue_filters_before_allocation_and_preserves_explicit_overrides() {
 
 #[test]
 fn queue_policy_configuration_rejects_unsupported_versions() {
-    for version in [json!(0), json!(3), json!(1.5), json!("2")] {
+    for version in [json!(1), json!(2), json!(3)] {
+        let mut value = serde_json::to_value(config()).expect("configuration JSON");
+        value["queue_priority_policy_version"] = version;
+        assert!(parse_document::<RepetoConfiguration>(SchemaKind::Configuration, value).is_ok());
+    }
+    for version in [json!(0), json!(4), json!(1.5), json!("2")] {
         let mut value = serde_json::to_value(config()).expect("configuration JSON");
         value["queue_priority_policy_version"] = version;
         assert!(parse_document::<RepetoConfiguration>(SchemaKind::Configuration, value).is_err());
+    }
+}
+
+fn missed_review_target(review: &LatestReview) -> QueueTarget<'_> {
+    QueueTarget {
+        id: "target",
+        topic: "Rust",
+        lifecycle_state: LifecycleState::Active,
+        needs_study: false,
+        latest_review: Some(review),
+    }
+}
+
+fn missed_review_at(reviewed_at: DateTime<Utc>) -> LatestReview {
+    LatestReview {
+        memory_state: MemoryState {
+            stability: 2.306_499_958_038_33,
+            difficulty: 2.118_103_981_018_066_4,
+        },
+        reviewed_at,
+        due_at: reviewed_at,
+        confidence: None,
+        result: "not_correct".to_owned(),
+    }
+}
+
+#[test]
+fn policy_three_holds_a_missed_review_back_for_twelve_hours() {
+    let reviewed_at = now() - Duration::hours(6);
+    let review = missed_review_at(reviewed_at);
+    let target = missed_review_target(&review);
+    let queue_at = |evaluated_at: DateTime<Utc>| {
+        build_queue(
+            &config_with_policy(3),
+            &[target],
+            QueueRequest {
+                evaluated_at,
+                topic: None,
+                target_id: None,
+                limit: None,
+            },
+        )
+        .expect("queue")
+    };
+
+    let just_before_hold_ends = reviewed_at + Duration::hours(12) - Duration::milliseconds(1);
+    let excluded = queue_at(just_before_hold_ends);
+    assert!(excluded.recommended_targets.is_empty());
+    assert_eq!(excluded.due_count, 0);
+
+    let hold_ends = reviewed_at + Duration::hours(12);
+    let included = queue_at(hold_ends);
+    assert_eq!(included.due_count, 1);
+    assert_eq!(included.recommended_targets.len(), 1);
+    assert_eq!(included.recommended_targets[0].target_id, "target");
+    assert_eq!(
+        included.recommended_targets[0].rank_details.reason,
+        QueueRankReason::DueReview
+    );
+}
+
+#[test]
+fn policy_two_ignores_the_review_hold_immediately_after_review() {
+    let reviewed_at = now() - Duration::hours(1);
+    let review = missed_review_at(reviewed_at);
+    let target = missed_review_target(&review);
+    let output = build_queue(
+        &config_with_policy(2),
+        &[target],
+        QueueRequest {
+            evaluated_at: reviewed_at + Duration::milliseconds(1),
+            topic: None,
+            target_id: None,
+            limit: None,
+        },
+    )
+    .expect("queue");
+    assert_eq!(output.due_count, 1);
+    assert_eq!(output.recommended_targets.len(), 1);
+    assert_eq!(output.recommended_targets[0].target_id, "target");
+    assert_eq!(
+        output.recommended_targets[0].rank_details.reason,
+        QueueRankReason::DueReview
+    );
+}
+
+#[test]
+fn policy_three_matches_policy_two_when_due_at_exceeds_the_review_hold() {
+    let reviewed_at = now() - Duration::days(2);
+    let review = LatestReview {
+        memory_state: MemoryState {
+            stability: 2.306_499_958_038_33,
+            difficulty: 2.118_103_981_018_066_4,
+        },
+        reviewed_at,
+        due_at: reviewed_at + Duration::days(1),
+        confidence: None,
+        result: "correct".to_owned(),
+    };
+    let target = missed_review_target(&review);
+    let request = QueueRequest {
+        evaluated_at: review.due_at,
+        topic: None,
+        target_id: None,
+        limit: None,
+    };
+    let policy_two = build_queue(&config_with_policy(2), &[target], request).expect("policy 2");
+    let policy_three = build_queue(&config_with_policy(3), &[target], request).expect("policy 3");
+    assert_eq!(policy_two, policy_three);
+}
+
+#[test]
+fn explicit_target_reports_early_under_policy_three_within_the_review_hold() {
+    let reviewed_at = now() - Duration::hours(6);
+    let review = missed_review_at(reviewed_at);
+    let target = missed_review_target(&review);
+    let request = QueueRequest {
+        evaluated_at: reviewed_at + Duration::hours(1),
+        topic: None,
+        target_id: Some("target"),
+        limit: None,
+    };
+
+    let policy_three =
+        build_queue(&config_with_policy(3), &[target], request).expect("policy 3 explicit");
+    assert_eq!(
+        policy_three.recommended_targets[0].rank_details.reason,
+        QueueRankReason::ExplicitTarget
+    );
+    assert!(policy_three.recommended_targets[0].rank_details.early);
+
+    let policy_two =
+        build_queue(&config_with_policy(2), &[target], request).expect("policy 2 explicit");
+    assert_eq!(
+        policy_two.recommended_targets[0].rank_details.reason,
+        QueueRankReason::ExplicitTarget
+    );
+    assert!(!policy_two.recommended_targets[0].rank_details.early);
+}
+
+#[test]
+fn policy_three_allocation_matches_policy_two_without_recent_reviews() {
+    for (due, first, limit) in [(12, 12, 5), (1, 8, 6), (8, 1, 6), (0, 4, 3), (4, 0, 3)] {
+        let policy_two = mixed_queue_with_policy(due, first, limit, 2);
+        let policy_three = mixed_queue_with_policy(due, first, limit, 3);
+        assert_eq!(policy_two, policy_three);
     }
 }

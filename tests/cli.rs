@@ -1005,3 +1005,66 @@ fn queue_policy_upgrade_changes_selection_without_rewriting_reviews() {
         fs::read(data.path().join("events.jsonl")).expect("unchanged event history")
     );
 }
+
+fn set_queue_policy(data: &Path, version: u64) {
+    let config_path = data.join("config.yaml");
+    let mut config: Value =
+        serde_yaml::from_str(&fs::read_to_string(&config_path).expect("config"))
+            .expect("config YAML");
+    config["queue_priority_policy_version"] = json!(version);
+    fs::write(
+        config_path,
+        serde_yaml::to_string(&config).expect("config YAML"),
+    )
+    .expect("updated config");
+    assert_ok(data, &["check"]);
+}
+
+#[test]
+fn queue_policy_three_holds_a_missed_review_back_without_rewriting_events() {
+    let data = setup();
+    activate(data.path());
+    let input = write_review(
+        data.path(),
+        &review(false, "initial", "2026-09-02T12:00:00.000Z"),
+    );
+    assert_ok(data.path(), &["review", "record", "--input", &input]);
+    let events_before = fs::read(data.path().join("events.jsonl")).expect("event history");
+
+    set_queue_policy(data.path(), 2);
+    let within_hold_args = ["queue", "--limit", "1", "--at", "2026-09-02T13:00:00.000Z"];
+    let due_under_policy_two = assert_ok(data.path(), &within_hold_args);
+    assert_eq!(
+        due_under_policy_two["recommended_targets"][0]["target_id"],
+        "target"
+    );
+    assert_eq!(
+        due_under_policy_two["recommended_targets"][0]["rank_details"]["reason"],
+        "due_review"
+    );
+
+    set_queue_policy(data.path(), 3);
+    let held_back_under_policy_three = assert_ok(data.path(), &within_hold_args);
+    assert_eq!(
+        held_back_under_policy_three["recommended_targets"]
+            .as_array()
+            .expect("recommended targets array"),
+        &Vec::<Value>::new()
+    );
+
+    let after_hold_args = ["queue", "--limit", "1", "--at", "2026-09-03T00:00:00.000Z"];
+    let due_after_hold = assert_ok(data.path(), &after_hold_args);
+    assert_eq!(
+        due_after_hold["recommended_targets"][0]["target_id"],
+        "target"
+    );
+    assert_eq!(
+        due_after_hold["recommended_targets"][0]["rank_details"]["reason"],
+        "due_review"
+    );
+
+    assert_eq!(
+        events_before,
+        fs::read(data.path().join("events.jsonl")).expect("unchanged event history")
+    );
+}
