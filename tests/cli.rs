@@ -330,6 +330,42 @@ fn review_record_has_no_clock_override_and_missing_data_directory_is_stable() {
 }
 
 #[test]
+fn review_record_input_is_json_only_regardless_of_file_extension() {
+    let data = setup();
+    activate(data.path());
+
+    let yaml_path = data.path().join("review.yaml");
+    fs::write(
+        &yaml_path,
+        "schema_version: 1\ntarget_id: target\nsession_id: session\n",
+    )
+    .expect("YAML-content review input");
+    assert_error(
+        data.path(),
+        &[
+            "review",
+            "record",
+            "--input",
+            yaml_path.to_str().expect("UTF-8 path"),
+        ],
+        "json_parse_error",
+    );
+
+    let value = review(true, "session", "2026-09-02T12:00:00.000Z");
+    fs::write(&yaml_path, value.to_string()).expect("JSON-content review input");
+    let committed = assert_ok(
+        data.path(),
+        &[
+            "review",
+            "record",
+            "--input",
+            yaml_path.to_str().expect("UTF-8 path"),
+        ],
+    );
+    assert_eq!(committed["disposition"], "committed");
+}
+
+#[test]
 fn revision_exact_retry_is_byte_stable_and_changed_identity_conflicts() {
     let data = setup();
     add_successor(data.path());

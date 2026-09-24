@@ -414,18 +414,13 @@ fn load_catalogue_with_source_syntax(
 
 /// Parses, validates, and returns the schema-derived review-record type.
 ///
+/// Review input is JSON only.
+///
 /// # Errors
 ///
-/// Returns a stable error when the selected YAML or JSON input is invalid.
-pub fn parse_review_record_input(
-    input: &str,
-    is_yaml: bool,
-) -> Result<RepetoReviewRecordInput, ValidationError> {
-    let value = if is_yaml {
-        parse_yaml(input)?
-    } else {
-        parse_json(input)?
-    };
+/// Returns a stable error when the JSON input is invalid.
+pub fn parse_review_record_input(input: &str) -> Result<RepetoReviewRecordInput, ValidationError> {
+    let value = parse_json(input)?;
     validate_document(SchemaKind::ReviewRecordInput, &value)?;
     parse_document(SchemaKind::ReviewRecordInput, value)
 }

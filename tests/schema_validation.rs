@@ -28,11 +28,8 @@ fn valid_fixtures_validate_and_deserialize_into_generated_types() {
     let _: RepetoTargetDefinition = parse_document(SchemaKind::Target, target).unwrap();
     let _: RepetoEvent = parse_document(SchemaKind::Event, event).unwrap();
     let _: RepetoEvent = parse_document(SchemaKind::Event, completed_review_event).unwrap();
-    let _: RepetoReviewRecordInput = parse_review_record_input(
-        include_str!("fixtures/valid/review-record-input.json"),
-        false,
-    )
-    .unwrap();
+    let _: RepetoReviewRecordInput =
+        parse_review_record_input(include_str!("fixtures/valid/review-record-input.json")).unwrap();
 }
 
 #[test]
@@ -78,7 +75,7 @@ fn schema_owned_text_rejects_whitespace_only_values() {
 
     let mut review_input = json_fixture(include_str!("fixtures/valid/review-record-input.json"));
     review_input["metadata"]["grading_explanation"] = json!("   ");
-    let error = parse_review_record_input(&review_input.to_string(), false).unwrap_err();
+    let error = parse_review_record_input(&review_input.to_string()).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 }
 
@@ -118,7 +115,7 @@ fn review_input_rejects_caller_supplied_result_and_schedule_fields() {
     let mut review_input = json_fixture(include_str!("fixtures/valid/review-record-input.json"));
     review_input["result"] = json!("correct");
 
-    let error = parse_review_record_input(&review_input.to_string(), false).unwrap_err();
+    let error = parse_review_record_input(&review_input.to_string()).unwrap_err();
 
     assert_eq!(error.code, "schema_validation_failed");
 }
@@ -142,7 +139,7 @@ fn review_input_requires_canonical_timestamps_and_conditional_fields() {
 
     let mut review_input = json_fixture(include_str!("fixtures/valid/review-record-input.json"));
     review_input.as_object_mut().unwrap().remove("confidence");
-    let error = parse_review_record_input(&review_input.to_string(), false).unwrap_err();
+    let error = parse_review_record_input(&review_input.to_string()).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 
     let mut no_answer = json_fixture(include_str!("fixtures/valid/review-record-input.json"));
@@ -153,15 +150,15 @@ fn review_input_requires_canonical_timestamps_and_conditional_fields() {
         .as_object_mut()
         .unwrap()
         .remove("answer");
-    parse_review_record_input(&no_answer.to_string(), false).unwrap();
+    parse_review_record_input(&no_answer.to_string()).unwrap();
 
     let mut assisted = json_fixture(include_str!("fixtures/valid/review-record-input.json"));
     assisted["assessment"]["target_knowledge_supplied_before_answer"] = json!(true);
     assisted.as_object_mut().unwrap().remove("confidence");
-    parse_review_record_input(&assisted.to_string(), false).unwrap();
+    parse_review_record_input(&assisted.to_string()).unwrap();
 
     assisted["confidence"] = json!("sure");
-    let error = parse_review_record_input(&assisted.to_string(), false).unwrap_err();
+    let error = parse_review_record_input(&assisted.to_string()).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 
     let mut independent_missing_answer =
@@ -170,8 +167,7 @@ fn review_input_requires_canonical_timestamps_and_conditional_fields() {
         .as_object_mut()
         .unwrap()
         .remove("answer");
-    let error =
-        parse_review_record_input(&independent_missing_answer.to_string(), false).unwrap_err();
+    let error = parse_review_record_input(&independent_missing_answer.to_string()).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 
     let mut assisted_missing_answer =
@@ -185,18 +181,17 @@ fn review_input_requires_canonical_timestamps_and_conditional_fields() {
         .as_object_mut()
         .unwrap()
         .remove("answer");
-    let error = parse_review_record_input(&assisted_missing_answer.to_string(), false).unwrap_err();
+    let error = parse_review_record_input(&assisted_missing_answer.to_string()).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 
     let mut no_answer_with_answer = no_answer.clone();
     no_answer_with_answer["metadata"]["answer"] = json!("An answer is forbidden here.");
-    let error = parse_review_record_input(&no_answer_with_answer.to_string(), false).unwrap_err();
+    let error = parse_review_record_input(&no_answer_with_answer.to_string()).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 
     let mut no_answer_with_confidence = no_answer;
     no_answer_with_confidence["confidence"] = json!("guessing");
-    let error =
-        parse_review_record_input(&no_answer_with_confidence.to_string(), false).unwrap_err();
+    let error = parse_review_record_input(&no_answer_with_confidence.to_string()).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 }
 

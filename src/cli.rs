@@ -122,14 +122,14 @@ pub struct ReviseArgs {
 /// Review command variants.
 #[derive(Debug, Subcommand)]
 pub enum ReviewCommand {
-    /// Record one complete review cycle from a JSON/YAML file or JSON standard input (`-`).
+    /// Record one complete review cycle from a JSON file or JSON standard input (`-`).
     Record(ReviewRecordArgs),
 }
 
 /// Review-record input and deterministic timestamp.
 #[derive(Debug, Args)]
 pub struct ReviewRecordArgs {
-    /// JSON/YAML input path, or `-` for JSON standard input.
+    /// JSON input path, or `-` for JSON standard input.
     #[arg(long)]
     pub input: String,
 }

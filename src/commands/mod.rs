@@ -9,7 +9,7 @@ use std::{
 };
 
 use repeto::{
-    domain::LifecycleState,
+    domain::{LifecycleState, RepetoReviewRecordInput},
     events::{
         DerivedStudyState, EventRequest, EventRequestKind, replay, write_event_with_locked_replay,
     },
@@ -17,9 +17,9 @@ use repeto::{
     queue::{QueueRequest, QueueTarget, build_queue},
     scheduler::{LatestReview, ScheduleRequest, Scheduler},
     validation::{
-        Catalogue, TargetFile, load_catalogue, load_catalogue_for_source_preflight, parse_json,
-        parse_review_record_input, parse_yaml, validate_review_input_for_target,
-        validate_source_note_paths, validate_source_note_paths_for_ids,
+        Catalogue, SchemaKind, TargetFile, load_catalogue, load_catalogue_for_source_preflight,
+        parse_document, parse_json, validate_review_input_for_target, validate_source_note_paths,
+        validate_source_note_paths_for_ids,
     },
 };
 use repeto_assessment::{Assessment, AssessmentResult, POLICY_ID, derive_result};
@@ -268,14 +268,11 @@ where
 }
 
 fn review_record(data_directory: &Path, input_path: &str) -> Result<Value, CliError> {
-    let input = read_review_input(input_path)?;
-    parse_review_record_input(&input.contents, input.is_yaml).map_err(CliError::from)?;
-    let review_value = if input.is_yaml {
-        parse_yaml(&input.contents)
-    } else {
-        parse_json(&input.contents)
-    }
-    .map_err(CliError::from)?;
+    let contents = read_review_input(input_path)?;
+    let review_value = parse_json(&contents).map_err(CliError::from)?;
+    let _: RepetoReviewRecordInput =
+        parse_document(SchemaKind::ReviewRecordInput, review_value.clone())
+            .map_err(CliError::from)?;
     let target_id = review_value
         .get("target_id")
         .and_then(Value::as_str)
@@ -368,19 +365,9 @@ fn review_record(data_directory: &Path, input_path: &str) -> Result<Value, CliEr
     })
 }
 
-struct ReviewInput {
-    contents: String,
-    is_yaml: bool,
-}
-
-fn read_review_input(path: &str) -> Result<ReviewInput, CliError> {
-    // Standard input has no extension, so its version 1 format is JSON only.
-    let is_yaml = Path::new(path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("yaml") || extension.eq_ignore_ascii_case("yml")
-        });
+/// Reads raw review-record input. The input is always JSON: a path's
+/// extension carries no meaning here, and `-` reads JSON from standard input.
+fn read_review_input(path: &str) -> Result<String, CliError> {
     let contents = if path == "-" {
         let mut contents = String::new();
         io::stdin().read_to_string(&mut contents).map_err(|error| {
@@ -400,7 +387,7 @@ fn read_review_input(path: &str) -> Result<ReviewInput, CliError> {
             )
         })?
     };
-    Ok(ReviewInput { contents, is_yaml })
+    Ok(contents)
 }
 
 fn review_payload(mut input: Value, result: &str, scheduling: Value) -> Result<Value, CliError> {
