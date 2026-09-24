@@ -779,7 +779,11 @@ fn retry_or_noop(
         }
         EventRequestKind::Pause { .. } => target.lifecycle == LifecycleState::Paused,
         EventRequestKind::Retirement { .. } => target.lifecycle == LifecycleState::Retired,
-        EventRequestKind::NeedsStudyFlag { .. } => target.needs_study,
+        // The flag is independent of lifecycle, so an already-flagged target
+        // outside Active must still reach validation and be rejected.
+        EventRequestKind::NeedsStudyFlag { .. } => {
+            target.lifecycle == LifecycleState::Active && target.needs_study
+        }
         EventRequestKind::Revision { .. } | EventRequestKind::Review { .. } => false,
     };
     Ok(is_noop.then_some(WriteOutcome {

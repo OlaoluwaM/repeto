@@ -1196,6 +1196,43 @@ fn flag_study_is_illegal_outside_the_active_lifecycle() {
 }
 
 #[test]
+fn flag_study_on_an_already_flagged_paused_target_is_illegal_not_a_noop() {
+    let data = setup();
+    activate(data.path());
+    flag_study(
+        data.path(),
+        "target",
+        "Flag while active.",
+        "2026-09-24T12:00:00.000Z",
+    );
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "pause",
+            "target",
+            "--reason",
+            "Pause after flagging.",
+            "--at",
+            "2026-09-24T12:01:00.000Z",
+        ],
+    );
+    assert_error(
+        data.path(),
+        &[
+            "target",
+            "flag-study",
+            "target",
+            "--reason",
+            "Flag again while paused.",
+            "--at",
+            "2026-09-24T12:02:00.000Z",
+        ],
+        "illegal_lifecycle_transition",
+    );
+}
+
+#[test]
 fn flag_study_flag_persists_through_a_non_correct_review_below_the_threshold() {
     let data = setup();
     activate(data.path());
