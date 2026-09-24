@@ -16,6 +16,14 @@ use crate::domain::{RepetoConfiguration, generated::MemoryState};
 pub const IMPLEMENTATION: &str = "fsrs-rs";
 pub const VERSION: &str = "6.6.2";
 const DESIRED_RETENTION: f32 = 0.9;
+// fsrs-rs 6.6.2's `clip_parameters` (crates.io `fsrs` = 6.6.2, pinned above)
+// clamps the 21st parameter (`w[20]`, the decay) to this range before using
+// it to derive `next_interval`'s decay. That clipped value is not exposed
+// (`FSRS::parameters` is `pub(crate)` and `clip_parameters` is not exported),
+// so the decay used for retrievability here must be clamped the same way to
+// stay consistent with the interval fsrs-rs actually chose.
+const DECAY_LOWER_BOUND: f32 = 0.1;
+const DECAY_UPPER_BOUND: f32 = 0.8;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SchedulerError {
@@ -120,6 +128,17 @@ impl Scheduler {
         Ok(Self { fsrs, parameters })
     }
 
+    /// The retrievability decay, taken from the 21st configured FSRS
+    /// parameter (`w[20]`) and clamped to the range fsrs-rs itself clamps
+    /// `w[20]` to before deriving `next_interval`'s decay (see
+    /// `DECAY_LOWER_BOUND`/`DECAY_UPPER_BOUND`). This keeps stored
+    /// retrievability consistent with the interval fsrs-rs actually chose,
+    /// instead of assuming the library default or an out-of-range configured
+    /// value. The stored `parameters` array itself is left unclamped.
+    fn decay(&self) -> f32 {
+        self.parameters[20].clamp(DECAY_LOWER_BOUND, DECAY_UPPER_BOUND)
+    }
+
     pub fn schedule(&self, request: &ScheduleRequest) -> Result<Value, SchedulerError> {
         let elapsed = elapsed_whole_days(
             request.prior_memory_state.as_ref(),
@@ -182,11 +201,8 @@ impl Scheduler {
             stability: f64::from(state.memory.stability),
             difficulty: f64::from(state.memory.difficulty),
         };
-        let retrievability = current_retrievability(
-            state.memory,
-            interval_to_f32(interval),
-            fsrs_rs::FSRS6_DEFAULT_DECAY,
-        );
+        let retrievability =
+            current_retrievability(state.memory, interval_to_f32(interval), self.decay());
         if !retrievability.is_finite() || !(0.0..=1.0).contains(&retrievability) {
             return Err(SchedulerError::new(
                 "invalid_retrievability",
@@ -351,7 +367,7 @@ impl Scheduler {
         Ok(f64::from(current_retrievability(
             to_fsrs_memory_state(memory)?,
             days,
-            fsrs_rs::FSRS6_DEFAULT_DECAY,
+            self.decay(),
         )))
     }
 }
