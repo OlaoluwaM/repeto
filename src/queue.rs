@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use crate::{
     domain::{LifecycleState, RepetoConfiguration},
+    output::serialize_millis,
     scheduler::{LatestReview, Scheduler, SchedulerError},
 };
 
@@ -74,6 +75,7 @@ pub struct RankedTarget {
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct QueueOutput {
+    #[serde(serialize_with = "serialize_millis")]
     pub evaluated_at: DateTime<Utc>,
     pub due_count: usize,
     pub bootstrap_count: usize,

@@ -796,6 +796,26 @@ fn target_show_still_validates_source_notes_for_an_active_target() {
 }
 
 #[test]
+fn command_output_timestamps_use_millisecond_precision() {
+    let data = setup();
+    activate(data.path());
+    let input = write_review(
+        data.path(),
+        &review(true, "session", "2026-09-02T12:00:00.000Z"),
+    );
+    assert_ok(data.path(), &["review", "record", "--input", &input]);
+
+    let history = assert_ok(data.path(), &["target", "history", "target"]);
+    assert_eq!(
+        history["reviews"][0]["occurred_at"],
+        "2026-09-02T12:00:00.000Z"
+    );
+
+    let queue = assert_ok(data.path(), &["queue", "--at", "2026-09-06T12:00:00Z"]);
+    assert_eq!(queue["evaluated_at"], "2026-09-06T12:00:00.000Z");
+}
+
+#[test]
 fn replay_rejects_an_assessment_result_that_the_policy_did_not_derive() {
     let data = setup();
     activate(data.path());

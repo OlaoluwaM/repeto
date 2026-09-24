@@ -1,6 +1,7 @@
 //! Stable JSON output envelopes shared by commands.
 
-use serde::Serialize;
+use chrono::{DateTime, SecondsFormat, Utc};
+use serde::{Serialize, Serializer};
 
 /// A successful command result.
 #[derive(Debug, Serialize)]
@@ -34,4 +35,27 @@ impl<E> Failure<E> {
     pub const fn new(error: E) -> Self {
         Self { ok: false, error }
     }
+}
+
+/// Renders a canonical UTC timestamp with millisecond precision, e.g.
+/// `2026-09-02T12:01:00.000Z`.
+///
+/// Command output must render timestamps this way rather than with a
+/// `DateTime<Utc>` type's default serde format, which drops zero fractions or
+/// prints nanoseconds instead of the stable millisecond precision.
+#[must_use]
+pub fn format_millis(value: &DateTime<Utc>) -> String {
+    value.to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+/// `serde(serialize_with = ...)` adapter for [`format_millis`].
+///
+/// # Errors
+///
+/// Returns an error only if the serializer itself fails to write the string.
+pub fn serialize_millis<S>(value: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(&format_millis(value))
 }

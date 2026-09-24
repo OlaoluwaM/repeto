@@ -13,6 +13,7 @@ use repeto::{
     events::{
         DerivedStudyState, EventRequest, EventRequestKind, replay, write_event_with_locked_replay,
     },
+    output,
     queue::{QueueRequest, QueueTarget, build_queue},
     scheduler::{LatestReview, ScheduleRequest, Scheduler},
     validation::{
@@ -246,7 +247,7 @@ fn target_history(data_directory: &Path, id: &str) -> Result<Value, CliError> {
         .map(|review| {
             json!({
                 "sequence": review.sequence,
-                "occurred_at": review.occurred_at,
+                "occurred_at": output::format_millis(&review.occurred_at),
                 "payload": review.payload,
             })
         })
