@@ -1,6 +1,6 @@
 # ADR 0007: Record a Manual Needs-Study Flag as an Append-Only Event
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-24
 
 ## Context
