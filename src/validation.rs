@@ -259,6 +259,11 @@ impl<'de> Visitor<'de> for StrictJsonValueVisitor {
 pub fn validate_document(kind: SchemaKind, value: &Value) -> Result<(), ValidationError> {
     check_schema_version(value)?;
 
+    // TODO(perf): compile each schema's validator once per process and reuse
+    // it. Every call recompiles, and commands validate each document more than
+    // once, so cost grows with the event count: `check` took 0.8 s in release
+    // with 68 events on 2026-09-24. Deferred until it is noticeable; verify the
+    // output is byte-identical before and after.
     let schema: Value = serde_json::from_str(kind.schema_text()).map_err(|error| {
         ValidationError::new(
             "schema_definition_error",
