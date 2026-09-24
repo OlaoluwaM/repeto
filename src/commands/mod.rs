@@ -213,7 +213,13 @@ fn target_show(data_directory: &Path, id: &str) -> Result<Value, CliError> {
     let state = replay_catalogue(&catalogue)?;
     let definition = definition_value(&catalogue, id)?;
     let target = state.target(id).ok_or_else(|| unknown_target(id))?;
-    validate_sources(&catalogue, std::iter::once(id))?;
+    // Retired targets keep historical references without requiring the old
+    // files to remain, so structural inspection must not resolve their
+    // source-note paths. Draft, active, and paused targets still need their
+    // paths to resolve because review preparation reads them.
+    if target.lifecycle != LifecycleState::Retired {
+        validate_sources(&catalogue, std::iter::once(id))?;
+    }
     let latest_verification_sources = target
         .latest_review
         .as_ref()

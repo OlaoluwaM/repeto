@@ -761,6 +761,41 @@ fn correct_review_resets_needs_study_and_lifecycle_rejects_invalid_transition() 
 }
 
 #[test]
+fn target_show_succeeds_for_a_retired_target_with_a_missing_source_note() {
+    let data = setup();
+    activate(data.path());
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "retire",
+            "target",
+            "--reason",
+            "Retire before deleting its source note.",
+            "--at",
+            "2026-09-02T12:00:00.000Z",
+        ],
+    );
+    fs::remove_file(data.path().join("notes/Cards/note.md")).expect("stale source note");
+
+    let shown = assert_ok(data.path(), &["target", "show", "target"]);
+    assert_eq!(shown["lifecycle"], "retired");
+}
+
+#[test]
+fn target_show_still_validates_source_notes_for_an_active_target() {
+    let data = setup();
+    activate(data.path());
+    fs::remove_file(data.path().join("notes/Cards/note.md")).expect("stale source note");
+
+    assert_error(
+        data.path(),
+        &["target", "show", "target"],
+        "invalid_source_note_path",
+    );
+}
+
+#[test]
 fn replay_rejects_an_assessment_result_that_the_policy_did_not_derive() {
     let data = setup();
     activate(data.path());
