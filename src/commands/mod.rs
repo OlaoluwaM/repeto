@@ -166,6 +166,18 @@ fn target(data_directory: &Path, command: TargetCommand) -> Result<Value, CliErr
                 ))
             })
         }
+        TargetCommand::FlagStudy(arguments) => {
+            let occurred_at = crate::clock::resolve(arguments.at.as_deref())?;
+            lifecycle_write(data_directory, move |_, _| {
+                Ok(EventRequest::new(
+                    arguments.id,
+                    occurred_at,
+                    EventRequestKind::NeedsStudyFlag {
+                        reason: arguments.reason,
+                    },
+                ))
+            })
+        }
         TargetCommand::Revise(arguments) => {
             let occurred_at = crate::clock::resolve(arguments.at.as_deref())?;
             lifecycle_write(data_directory, move |catalogue, state| {

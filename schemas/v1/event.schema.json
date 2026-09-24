@@ -10,7 +10,15 @@
     "sequence": { "type": "integer", "minimum": 1 },
     "event_type": {
       "type": "string",
-      "enum": ["activation", "pause", "resume", "retirement", "revision", "review_completed"]
+      "enum": [
+        "activation",
+        "pause",
+        "resume",
+        "retirement",
+        "revision",
+        "review_completed",
+        "needs_study_flag"
+      ]
     },
     "occurred_at": { "$ref": "#/$defs/EventUtcMillisecondTimestamp" },
     "target_id": { "$ref": "#/$defs/NonBlankString" },

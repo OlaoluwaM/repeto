@@ -76,6 +76,7 @@ repeto [--data-dir PATH] target activate ID [--at TIMESTAMP]
 repeto [--data-dir PATH] target pause ID --reason TEXT [--at TIMESTAMP]
 repeto [--data-dir PATH] target resume ID --reason TEXT [--at TIMESTAMP]
 repeto [--data-dir PATH] target retire ID --reason TEXT [--at TIMESTAMP]
+repeto [--data-dir PATH] target flag-study ID --reason TEXT [--at TIMESTAMP]
 repeto [--data-dir PATH] target revise OLD_ID NEW_ID --reason TEXT
   [--carry-history] [--at TIMESTAMP]
 
@@ -152,6 +153,11 @@ one closed scheduling object, and commits one event. `review record` has no
 
 An exact retry returns the existing event. Changed input under the same
 `session_id + target_id` returns `conflicting_review_retry`.
+
+`target flag-study` sets `needs_study` on an active target explicitly, without
+waiting for three consecutive `not_correct` reviews. It applies only to active
+targets and leaves the review streak and scheduling untouched. There is no
+unflag command: the flag is cleared only by a later `correct` review.
 
 ## Target changes
 

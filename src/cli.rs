@@ -78,6 +78,8 @@ pub enum TargetCommand {
     Resume(ReasonArgs),
     /// Retire an active or paused target.
     Retire(ReasonArgs),
+    /// Manually flag an active target as needing study.
+    FlagStudy(ReasonArgs),
     /// Replace an active or paused target with its prepared revision.
     Revise(ReviseArgs),
 }

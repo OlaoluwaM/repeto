@@ -140,6 +140,11 @@ pub enum EventRequestKind {
         /// User-provided reason.
         reason: String,
     },
+    /// Manually flag an active target as needing study.
+    NeedsStudyFlag {
+        /// User-provided reason.
+        reason: String,
+    },
     /// Replace a target with its immutable successor definition.
     Revision {
         /// Successor target ID.
@@ -165,6 +170,7 @@ impl EventRequestKind {
             Self::Pause { .. } => "pause",
             Self::Resume { .. } => "resume",
             Self::Retirement { .. } => "retirement",
+            Self::NeedsStudyFlag { .. } => "needs_study_flag",
             Self::Revision { .. } => "revision",
             Self::Review { .. } => "review_completed",
         }
@@ -173,7 +179,10 @@ impl EventRequestKind {
     fn payload(&self) -> Value {
         match self {
             Self::Activation { definition } => json!({ "definition": definition }),
-            Self::Pause { reason } | Self::Resume { reason } | Self::Retirement { reason } => {
+            Self::Pause { reason }
+            | Self::Resume { reason }
+            | Self::Retirement { reason }
+            | Self::NeedsStudyFlag { reason } => {
                 json!({ "reason": reason })
             }
             Self::Revision {
@@ -616,6 +625,7 @@ fn apply_event(state: &mut DerivedStudyState, event: &Value) -> Result<(), Event
         "pause" => target_state_mut(state, &target_id)?.lifecycle = LifecycleState::Paused,
         "resume" => target_state_mut(state, &target_id)?.lifecycle = LifecycleState::Active,
         "retirement" => target_state_mut(state, &target_id)?.lifecycle = LifecycleState::Retired,
+        "needs_study_flag" => target_state_mut(state, &target_id)?.needs_study = true,
         "revision" => apply_revision(state, &target_id, &payload)?,
         "review_completed" => apply_review(state, &target_id, sequence, event, payload)?,
         _ => return Err(malformed_event("unknown event type")),
@@ -683,7 +693,7 @@ fn apply_review(
                         Value::Null,
                     )
                 })?;
-        target.needs_study = target.consecutive_non_correct >= 3;
+        target.needs_study = target.needs_study || target.consecutive_non_correct >= 3;
     }
     target.latest_review = Some(review.clone());
     target.reviews.push(review);
@@ -769,6 +779,7 @@ fn retry_or_noop(
         }
         EventRequestKind::Pause { .. } => target.lifecycle == LifecycleState::Paused,
         EventRequestKind::Retirement { .. } => target.lifecycle == LifecycleState::Retired,
+        EventRequestKind::NeedsStudyFlag { .. } => target.needs_study,
         EventRequestKind::Revision { .. } | EventRequestKind::Review { .. } => false,
     };
     Ok(is_noop.then_some(WriteOutcome {

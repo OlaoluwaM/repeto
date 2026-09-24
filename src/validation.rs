@@ -926,6 +926,7 @@ fn validate_event_transition(
             states,
         ),
         "retirement" => retire_target(payload, target_id, state, states),
+        "needs_study_flag" => flag_study_target(payload, target_id, state),
         "revision" => revise_target(payload, target_id, state, targets, states),
         "review_completed" => record_review(payload, target_id, state, targets, reviewed_sessions),
         _ => Err(invalid_event_payload(event_type)),
@@ -983,6 +984,16 @@ fn retire_target(
         return Err(illegal_transition("retirement", target_id, state));
     }
     states.insert(target_id.to_owned(), LifecycleState::Retired);
+    Ok(())
+}
+
+fn flag_study_target(
+    payload: &Value,
+    target_id: &str,
+    state: LifecycleState,
+) -> Result<(), ValidationError> {
+    require_payload_keys(payload, &["reason"], "needs_study_flag")?;
+    require_state(state, LifecycleState::Active, "needs_study_flag", target_id)?;
     Ok(())
 }
 

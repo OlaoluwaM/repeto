@@ -95,6 +95,13 @@ fn add_successor(data: &Path) {
     .expect("successor target");
 }
 
+fn flag_study(data: &Path, id: &str, reason: &str, at: &str) -> Value {
+    assert_ok(
+        data,
+        &["target", "flag-study", id, "--reason", reason, "--at", at],
+    )
+}
+
 fn add_retired_target(data: &Path) {
     let retired = json!({
         "schema_version":1,"id":"retired","topic":"Rust","scope":"Retired scope",
@@ -1066,5 +1073,235 @@ fn queue_policy_three_holds_a_missed_review_back_without_rewriting_events() {
     assert_eq!(
         events_before,
         fs::read(data.path().join("events.jsonl")).expect("unchanged event history")
+    );
+}
+
+#[test]
+fn flag_study_commits_one_event_and_leaves_the_streak_unchanged() {
+    let data = setup();
+    activate(data.path());
+    let outcome = flag_study(
+        data.path(),
+        "target",
+        "Missed the same misconception twice.",
+        "2026-09-24T12:00:00.000Z",
+    );
+    assert_eq!(outcome["disposition"], "committed");
+    assert_eq!(outcome["event"]["event_type"], "needs_study_flag");
+    assert_eq!(
+        outcome["event"]["payload"],
+        json!({ "reason": "Missed the same misconception twice." })
+    );
+
+    let shown = assert_ok(data.path(), &["target", "show", "target"]);
+    assert_eq!(shown["needs_study"], true);
+    assert_eq!(shown["consecutive_non_correct"], 0);
+}
+
+#[test]
+fn repeated_flag_study_is_a_noop_with_no_new_event() {
+    let data = setup();
+    activate(data.path());
+    flag_study(
+        data.path(),
+        "target",
+        "First flag.",
+        "2026-09-24T12:00:00.000Z",
+    );
+    let events_before = fs::read(data.path().join("events.jsonl")).expect("event history");
+
+    let outcome = flag_study(
+        data.path(),
+        "target",
+        "Second flag.",
+        "2026-09-24T12:05:00.000Z",
+    );
+    assert_eq!(outcome["disposition"], "noop");
+    assert!(outcome["event"].is_null());
+    assert_eq!(
+        events_before,
+        fs::read(data.path().join("events.jsonl")).expect("unchanged event history")
+    );
+}
+
+#[test]
+fn flag_study_is_illegal_outside_the_active_lifecycle() {
+    let data = setup();
+    assert_error(
+        data.path(),
+        &[
+            "target",
+            "flag-study",
+            "target",
+            "--reason",
+            "Not active yet.",
+            "--at",
+            "2026-09-24T12:00:00.000Z",
+        ],
+        "illegal_lifecycle_transition",
+    );
+
+    activate(data.path());
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "pause",
+            "target",
+            "--reason",
+            "Pause before flagging.",
+            "--at",
+            "2026-09-24T12:01:00.000Z",
+        ],
+    );
+    assert_error(
+        data.path(),
+        &[
+            "target",
+            "flag-study",
+            "target",
+            "--reason",
+            "Paused target.",
+            "--at",
+            "2026-09-24T12:02:00.000Z",
+        ],
+        "illegal_lifecycle_transition",
+    );
+
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "retire",
+            "target",
+            "--reason",
+            "Retire before flagging.",
+            "--at",
+            "2026-09-24T12:03:00.000Z",
+        ],
+    );
+    assert_error(
+        data.path(),
+        &[
+            "target",
+            "flag-study",
+            "target",
+            "--reason",
+            "Retired target.",
+            "--at",
+            "2026-09-24T12:04:00.000Z",
+        ],
+        "illegal_lifecycle_transition",
+    );
+}
+
+#[test]
+fn flag_study_flag_persists_through_a_non_correct_review_below_the_threshold() {
+    let data = setup();
+    activate(data.path());
+    flag_study(
+        data.path(),
+        "target",
+        "Sharing the misconception again.",
+        "2026-09-24T12:00:00.000Z",
+    );
+    let input = write_review(
+        data.path(),
+        &review(false, "session-1", "2026-09-24T12:01:00.000Z"),
+    );
+    assert_ok(data.path(), &["review", "record", "--input", &input]);
+
+    let shown = assert_ok(data.path(), &["target", "show", "target"]);
+    assert_eq!(shown["needs_study"], true);
+    assert_eq!(shown["consecutive_non_correct"], 1);
+}
+
+#[test]
+fn flag_study_flag_clears_on_a_correct_review() {
+    let data = setup();
+    activate(data.path());
+    flag_study(
+        data.path(),
+        "target",
+        "Needs a focused study pass.",
+        "2026-09-24T12:00:00.000Z",
+    );
+    let input = write_review(
+        data.path(),
+        &review(true, "session-1", "2026-09-24T12:01:00.000Z"),
+    );
+    assert_ok(data.path(), &["review", "record", "--input", &input]);
+
+    let shown = assert_ok(data.path(), &["target", "show", "target"]);
+    assert_eq!(shown["needs_study"], false);
+    assert_eq!(shown["consecutive_non_correct"], 0);
+}
+
+#[test]
+fn flag_study_flag_carries_through_a_history_carrying_revision() {
+    let data = setup();
+    add_successor(data.path());
+    activate(data.path());
+    flag_study(
+        data.path(),
+        "target",
+        "Needs study before revising.",
+        "2026-09-24T12:00:00.000Z",
+    );
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "revise",
+            "target",
+            "target.r2",
+            "--reason",
+            "Carry history.",
+            "--carry-history",
+            "--at",
+            "2026-09-24T12:01:00.000Z",
+        ],
+    );
+
+    let successor = assert_ok(data.path(), &["target", "show", "target.r2"]);
+    assert_eq!(successor["needs_study"], true);
+}
+
+#[test]
+fn flag_study_excludes_a_target_from_the_normal_queue_but_an_exact_target_selects_it() {
+    let data = setup();
+    activate(data.path());
+    flag_study(
+        data.path(),
+        "target",
+        "Needs focused study.",
+        "2026-09-24T12:00:00.000Z",
+    );
+
+    let normal_queue = assert_ok(data.path(), &["queue", "--at", "2026-09-24T13:00:00.000Z"]);
+    assert_eq!(
+        normal_queue["recommended_targets"]
+            .as_array()
+            .expect("recommended targets array"),
+        &Vec::<Value>::new()
+    );
+
+    let explicit_queue = assert_ok(
+        data.path(),
+        &[
+            "queue",
+            "--target",
+            "target",
+            "--at",
+            "2026-09-24T13:00:00.000Z",
+        ],
+    );
+    assert_eq!(
+        explicit_queue["recommended_targets"][0]["target_id"],
+        "target"
+    );
+    assert_eq!(
+        explicit_queue["recommended_targets"][0]["rank_details"]["needs_study"],
+        true
     );
 }

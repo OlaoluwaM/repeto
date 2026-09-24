@@ -196,6 +196,24 @@ fn review_input_requires_canonical_timestamps_and_conditional_fields() {
 }
 
 #[test]
+fn needs_study_flag_event_accepts_the_reason_payload_and_rejects_other_shapes() {
+    let mut event = json_fixture(include_str!("fixtures/valid/event.json"));
+    event["event_type"] = json!("needs_study_flag");
+    event["payload"] = json!({ "reason": "Missed the same misconception twice." });
+    validate_document(SchemaKind::Event, &event).unwrap();
+
+    let _: RepetoEvent = parse_document(SchemaKind::Event, event.clone()).unwrap();
+
+    event["payload"] = json!({ "unrelated_field": "not a reason payload" });
+    let error = validate_document(SchemaKind::Event, &event).unwrap_err();
+    assert_eq!(error.code, "schema_validation_failed");
+
+    event["payload"] = json!({ "reason": "   " });
+    let error = validate_document(SchemaKind::Event, &event).unwrap_err();
+    assert_eq!(error.code, "schema_validation_failed");
+}
+
+#[test]
 fn output_envelopes_keep_success_and_error_shapes_distinct() {
     assert_eq!(
         serde_json::to_value(Success::new(json!({ "version": 1 }))).unwrap(),
