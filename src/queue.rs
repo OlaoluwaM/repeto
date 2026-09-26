@@ -5,7 +5,11 @@
     reason = "the stable JSON wire contract exposes independent queue facts"
 )]
 
-use std::{cmp::Ordering, collections::BTreeMap, num::NonZeroUsize};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroUsize,
+};
 
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
@@ -65,12 +69,33 @@ pub struct QueueRankDetails {
     pub bootstrap_position: Option<usize>,
     pub early: bool,
     pub needs_study: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<RotationRankDetails>,
+}
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct FirstReviewStamp {
+    #[serde(serialize_with = "serialize_millis")]
+    pub occurred_at: DateTime<Utc>,
+    pub sequence: u64,
+}
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct RotationRankDetails {
+    pub group_last_first_review: Option<FirstReviewStamp>,
+    pub topic_last_first_review: Option<FirstReviewStamp>,
+    pub diversity_preferred: bool,
+}
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct RotationGroupInfo {
+    pub id: String,
+    pub label: String,
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RankedTarget {
     pub rank: usize,
     pub target_id: String,
     pub topic: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rotation_group: Option<RotationGroupInfo>,
     pub rank_details: QueueRankDetails,
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -92,6 +117,23 @@ pub fn build_queue(
     targets: &[QueueTarget<'_>],
     request: QueueRequest<'_>,
 ) -> Result<QueueOutput, QueueError> {
+    if configuration.queue_priority_policy_version.get() == 4 {
+        return Err(QueueError {
+            code: "rotation_history_required",
+            message: "policy 4 requires actual event history; use build_queue_with_history"
+                .to_owned(),
+            details: Value::Null,
+        });
+    }
+    build_queue_with_history(configuration, targets, &[], request)
+}
+
+pub fn build_queue_with_history(
+    configuration: &RepetoConfiguration,
+    targets: &[QueueTarget<'_>],
+    events: &[Value],
+    request: QueueRequest<'_>,
+) -> Result<QueueOutput, QueueError> {
     let scheduler = Scheduler::from_configuration(configuration)?;
     let configured_recommended_count = configuration.default_recommended_target_count.get();
     let default_limit =
@@ -102,14 +144,23 @@ pub fn build_queue(
         })?;
     let selected_limit = request.limit.map_or(default_limit, NonZeroUsize::get);
     let policy_version = configuration.queue_priority_policy_version.get();
+    let rotation = if policy_version == 4 {
+        Some(RotationContext::new(configuration, targets, events)?)
+    } else {
+        None
+    };
     if let Some(id) = request.target_id {
-        return explicit_queue(
+        let mut output = explicit_queue(
             targets,
             request,
             id,
             configured_recommended_count,
             policy_version,
-        );
+        )?;
+        if let Some(rotation) = &rotation {
+            rotation.decorate(&mut output.recommended_targets[0]);
+        }
+        return Ok(output);
     }
     let mut due = Vec::new();
     let mut fresh = Vec::new();
@@ -140,8 +191,17 @@ pub fn build_queue(
     let due_count = due.len();
     let bootstrap_count = fresh.len();
     let mut eligible = due.into_iter().map(DueTarget::ranked).collect::<Vec<_>>();
-    let fresh = bootstrap(fresh);
-    if policy_version >= 2 {
+    let fresh = if let Some(rotation) = &rotation {
+        rotation.first_review_order(fresh)?
+    } else {
+        bootstrap(fresh)
+    };
+    if let Some(rotation) = &rotation {
+        for item in &mut eligible {
+            rotation.decorate(item);
+        }
+        eligible = allocate_rotated_reviews(eligible, fresh, selected_limit);
+    } else if policy_version >= 2 {
         eligible = allocate_first_reviews(eligible, fresh, selected_limit);
     } else {
         eligible.extend(fresh);
@@ -162,24 +222,300 @@ pub fn build_queue(
     })
 }
 
+fn allocation_counts(limit: usize, due_len: usize, fresh_len: usize) -> (usize, usize) {
+    let count = limit.min(due_len + fresh_len);
+    // Round one third to the nearest target, with first-review priority for
+    // single-target sessions and an even split for two-target sessions.
+    let first_quota = (count / 3 + usize::from(count % 3 == 2)).max(1);
+    let first_count = first_quota
+        .min(fresh_len)
+        .max(count.saturating_sub(due_len));
+    (count - first_count, first_count)
+}
+
 fn allocate_first_reviews(
     mut due: Vec<RankedTarget>,
     mut fresh: Vec<RankedTarget>,
     limit: usize,
 ) -> Vec<RankedTarget> {
-    let count = limit.min(due.len() + fresh.len());
-    // Round one third to the nearest target, with first-review priority for
-    // single-target sessions and an even split for two-target sessions.
-    let first_quota = (count / 3 + usize::from(count % 3 == 2)).max(1);
-    let first_count = first_quota
-        .min(fresh.len())
-        .max(count.saturating_sub(due.len()));
-    let remaining_due = due.split_off(count - first_count);
+    let (due_count, first_count) = allocation_counts(limit, due.len(), fresh.len());
+    let remaining_due = due.split_off(due_count);
     let remaining_fresh = fresh.split_off(first_count);
     due.extend(fresh);
     due.extend(remaining_due);
     due.extend(remaining_fresh);
     due
+}
+
+fn allocate_rotated_reviews(
+    mut due: Vec<RankedTarget>,
+    mut fresh: Vec<RankedTarget>,
+    limit: usize,
+) -> Vec<RankedTarget> {
+    let (due_count, first_count) = allocation_counts(limit, due.len(), fresh.len());
+    let remaining_fresh = fresh.split_off(first_count);
+    let mut represented = fresh
+        .iter()
+        .filter_map(|item| item.rotation_group.as_ref().map(|group| group.id.clone()))
+        .collect::<BTreeSet<_>>();
+    let mut selected_due = Vec::with_capacity(due_count);
+    if due_count > 0 {
+        let top = due.remove(0);
+        if let Some(group) = &top.rotation_group {
+            represented.insert(group.id.clone());
+        }
+        selected_due.push(top);
+    }
+    while selected_due.len() < due_count {
+        let bucket = due.first().map_or((0, false, false), due_bucket);
+        let bucket_end = due
+            .iter()
+            .take_while(|item| due_bucket(item) == bucket)
+            .count();
+        let index = due[..bucket_end]
+            .iter()
+            .position(|item| {
+                item.rotation_group
+                    .as_ref()
+                    .is_some_and(|group| !represented.contains(&group.id))
+            })
+            .unwrap_or(0);
+        let mut chosen = due.remove(index);
+        if let Some(group) = &chosen.rotation_group {
+            if let Some(rotation) = &mut chosen.rank_details.rotation {
+                rotation.diversity_preferred = index > 0 && represented.insert(group.id.clone());
+            }
+            represented.insert(group.id.clone());
+        }
+        selected_due.push(chosen);
+    }
+    selected_due.extend(fresh);
+    selected_due.extend(due);
+    selected_due.extend(remaining_fresh);
+    selected_due
+}
+
+fn due_bucket(target: &RankedTarget) -> (u8, bool, bool) {
+    let details = &target.rank_details;
+    (
+        details.retrievability_band.unwrap_or(0),
+        details.confident_error,
+        details.calibration_mismatch,
+    )
+}
+
+struct RotationContext {
+    topics: BTreeMap<String, RotationGroupInfo>,
+    group_last: BTreeMap<String, FirstReviewStamp>,
+    topic_last: BTreeMap<String, FirstReviewStamp>,
+}
+
+impl RotationContext {
+    fn new(
+        configuration: &RepetoConfiguration,
+        targets: &[QueueTarget<'_>],
+        events: &[Value],
+    ) -> Result<Self, QueueError> {
+        let mut topics = BTreeMap::new();
+        let groups = &configuration.rotation_groups;
+        if groups.is_empty() {
+            return Err(rotation_error("policy 4 requires rotation groups"));
+        }
+        for (id, group) in groups {
+            for topic in &group.topics {
+                if topics
+                    .insert(
+                        topic.to_string(),
+                        RotationGroupInfo {
+                            id: id.to_string(),
+                            label: group.label.to_string(),
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(rotation_error(
+                        "a topic belongs to multiple rotation groups",
+                    ));
+                }
+            }
+        }
+        let target_topics = targets
+            .iter()
+            .map(|target| (target.id, target.topic))
+            .collect::<BTreeMap<_, _>>();
+        for target in targets {
+            if target.lifecycle_state == LifecycleState::Active
+                && !topics.contains_key(target.topic)
+            {
+                return Err(rotation_error(
+                    "an active target topic has no rotation group",
+                ));
+            }
+        }
+        let mut reviewed = BTreeMap::<&str, bool>::new();
+        let mut group_last = BTreeMap::new();
+        let mut topic_last = BTreeMap::new();
+        for event in events {
+            let kind = event.get("event_type").and_then(Value::as_str);
+            let target_id = event
+                .get("target_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| rotation_error("historical event has no target ID"))?;
+            match kind {
+                Some("revision") => {
+                    if event["payload"]["carry_history"] == true {
+                        let successor =
+                            event["payload"]["new_target_id"].as_str().ok_or_else(|| {
+                                rotation_error("historical revision has no successor")
+                            })?;
+                        reviewed
+                            .insert(successor, reviewed.get(target_id).copied().unwrap_or(false));
+                    }
+                }
+                Some("review_completed") if !reviewed.get(target_id).copied().unwrap_or(false) => {
+                    reviewed.insert(target_id, true);
+                    let topic = target_topics
+                        .get(target_id)
+                        .ok_or_else(|| rotation_error("historical review target is missing"))?;
+                    let Some(group) = topics.get(*topic) else {
+                        continue;
+                    };
+                    let stamp = FirstReviewStamp {
+                        occurred_at: event
+                            .get("occurred_at")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| rotation_error("historical review has no timestamp"))?
+                            .parse()
+                            .map_err(|_| {
+                                rotation_error("historical review timestamp is invalid")
+                            })?,
+                        sequence: event
+                            .get("sequence")
+                            .and_then(Value::as_u64)
+                            .ok_or_else(|| rotation_error("historical review has no sequence"))?,
+                    };
+                    update_latest(&mut group_last, &group.id, &stamp);
+                    update_latest(&mut topic_last, topic, &stamp);
+                }
+                _ => {}
+            }
+        }
+        Ok(Self {
+            topics,
+            group_last,
+            topic_last,
+        })
+    }
+
+    fn decorate(&self, target: &mut RankedTarget) {
+        let Some(group) = self.topics.get(&target.topic) else {
+            return;
+        };
+        target.rotation_group = Some(group.clone());
+        target.rank_details.rotation = Some(RotationRankDetails {
+            group_last_first_review: self.group_last.get(&group.id).cloned(),
+            topic_last_first_review: self.topic_last.get(&target.topic).cloned(),
+            diversity_preferred: false,
+        });
+    }
+
+    fn first_review_order(
+        &self,
+        targets: Vec<QueueTarget<'_>>,
+    ) -> Result<Vec<RankedTarget>, QueueError> {
+        let mut grouped = BTreeMap::<String, BTreeMap<String, Vec<QueueTarget<'_>>>>::new();
+        for target in targets {
+            let group = self.topics.get(target.topic).ok_or_else(|| {
+                rotation_error("a first-review target topic has no rotation group")
+            })?;
+            grouped
+                .entry(group.id.clone())
+                .or_default()
+                .entry(target.topic.to_owned())
+                .or_default()
+                .push(target);
+        }
+        let mut groups = grouped
+            .into_iter()
+            .map(|(id, topics)| {
+                let mut topics = topics.into_iter().collect::<Vec<_>>();
+                topics.sort_by(|left, right| {
+                    self.topic_last
+                        .get(&left.0)
+                        .cmp(&self.topic_last.get(&right.0))
+                        .then_with(|| left.0.cmp(&right.0))
+                });
+                for (_, items) in &mut topics {
+                    items.sort_by(|left, right| right.id.cmp(left.id));
+                }
+                (id, topics, 0usize)
+            })
+            .collect::<Vec<_>>();
+        groups.sort_by(|left, right| {
+            self.group_last
+                .get(&left.0)
+                .cmp(&self.group_last.get(&right.0))
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        let total = groups
+            .iter()
+            .flat_map(|(_, topics, _)| topics)
+            .map(|(_, items)| items.len())
+            .sum();
+        let mut output = Vec::with_capacity(total);
+        while output.len() < total {
+            for (_, topics, next_topic) in &mut groups {
+                if topics.iter().all(|(_, items)| items.is_empty()) {
+                    continue;
+                }
+                for offset in 0..topics.len() {
+                    let index = (*next_topic + offset) % topics.len();
+                    if let Some(target) = topics[index].1.pop() {
+                        *next_topic = (index + 1) % topics.len();
+                        let mut ranked = RankedTarget {
+                            rank: 0,
+                            target_id: target.id.to_owned(),
+                            topic: target.topic.to_owned(),
+                            rotation_group: None,
+                            rank_details: QueueRankDetails {
+                                reason: QueueRankReason::NewBootstrap,
+                                retrievability_at_evaluation: None,
+                                retrievability_band: None,
+                                confident_error: false,
+                                calibration_mismatch: false,
+                                bootstrap_position: Some(output.len() + 1),
+                                early: false,
+                                needs_study: false,
+                                rotation: None,
+                            },
+                        };
+                        self.decorate(&mut ranked);
+                        output.push(ranked);
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(output)
+    }
+}
+
+fn update_latest(
+    map: &mut BTreeMap<String, FirstReviewStamp>,
+    key: &str,
+    stamp: &FirstReviewStamp,
+) {
+    if map.get(key).is_none_or(|previous| previous < stamp) {
+        map.insert(key.to_owned(), stamp.clone());
+    }
+}
+
+fn rotation_error(message: &str) -> QueueError {
+    QueueError {
+        code: "invalid_rotation_history",
+        message: message.to_owned(),
+        details: Value::Null,
+    }
 }
 
 /// Under policy 3, the effective due time is the later of the stored
@@ -236,7 +572,9 @@ fn explicit_queue(
             bootstrap_position: None,
             early,
             needs_study: target.needs_study,
+            rotation: None,
         },
+        rotation_group: None,
     };
     Ok(QueueOutput {
         evaluated_at: request.evaluated_at,
@@ -262,6 +600,7 @@ impl DueTarget<'_> {
             rank: 0,
             target_id: self.target.id.to_owned(),
             topic: self.target.topic.to_owned(),
+            rotation_group: None,
             rank_details: QueueRankDetails {
                 reason: QueueRankReason::DueReview,
                 retrievability_at_evaluation: Some(self.retrievability),
@@ -271,6 +610,7 @@ impl DueTarget<'_> {
                 bootstrap_position: None,
                 early: false,
                 needs_study: false,
+                rotation: None,
             },
         }
     }
@@ -328,6 +668,7 @@ fn bootstrap(targets: Vec<QueueTarget<'_>>) -> Vec<RankedTarget> {
                     rank: 0,
                     target_id: target.id.to_owned(),
                     topic: target.topic.to_owned(),
+                    rotation_group: None,
                     rank_details: QueueRankDetails {
                         reason: QueueRankReason::NewBootstrap,
                         retrievability_at_evaluation: None,
@@ -337,6 +678,7 @@ fn bootstrap(targets: Vec<QueueTarget<'_>>) -> Vec<RankedTarget> {
                         bootstrap_position: Some(output.len() + 1),
                         early: false,
                         needs_study: false,
+                        rotation: None,
                     },
                 });
             }

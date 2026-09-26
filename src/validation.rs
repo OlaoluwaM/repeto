@@ -450,6 +450,7 @@ fn validate_catalogue_without_source_syntax(
     events: &[Value],
 ) -> Result<(), ValidationError> {
     validate_document(SchemaKind::Configuration, configuration)?;
+    let rotation_topics = rotation_topic_groups(configuration)?;
 
     let mut targets = BTreeMap::new();
     for target_file in target_files {
@@ -466,7 +467,49 @@ fn validate_catalogue_without_source_syntax(
     }
 
     validate_revision_graph(&targets)?;
-    validate_events(events, &targets)
+    validate_events(events, &targets, rotation_topics.as_ref())
+}
+
+fn rotation_topic_groups(
+    configuration: &Value,
+) -> Result<Option<BTreeMap<String, String>>, ValidationError> {
+    if configuration["queue_priority_policy_version"] != 4 {
+        return Ok(None);
+    }
+    // typify 0.6.2 cannot generate Rust types from JSON Schema if/then.
+    // The schema owns the optional closed object shape; this semantic check
+    // enforces that policy 4 supplies a nonempty map and unique topic ownership.
+    let mut topics = BTreeMap::new();
+    let groups = configuration["rotation_groups"]
+        .as_object()
+        .ok_or_else(|| invalid_rotation_configuration("rotation_groups is missing"))?;
+    if groups.is_empty() {
+        return Err(invalid_rotation_configuration(
+            "policy 4 requires at least one rotation group",
+        ));
+    }
+    for (group_id, group) in groups {
+        let members = group["topics"]
+            .as_array()
+            .ok_or_else(|| invalid_rotation_configuration("rotation group has no topics"))?;
+        for topic in members {
+            let topic = topic
+                .as_str()
+                .ok_or_else(|| invalid_rotation_configuration("rotation topic is not text"))?;
+            if let Some(previous_group) = topics.insert(topic.to_owned(), group_id.to_owned()) {
+                return Err(ValidationError::new(
+                    "duplicate_rotation_topic",
+                    "a topic belongs to more than one rotation group",
+                    json!({ "topic": topic, "first_group": previous_group, "second_group": group_id }),
+                ));
+            }
+        }
+    }
+    Ok(Some(topics))
+}
+
+fn invalid_rotation_configuration(message: &str) -> ValidationError {
+    ValidationError::new("invalid_rotation_configuration", message, Value::Null)
 }
 
 /// Expands the restricted environment references accepted in `source_note_root`.
@@ -845,6 +888,7 @@ fn validate_revision_graph(targets: &BTreeMap<String, &Value>) -> Result<(), Val
 fn validate_events(
     events: &[Value],
     targets: &BTreeMap<String, &Value>,
+    rotation_topics: Option<&BTreeMap<String, String>>,
 ) -> Result<(), ValidationError> {
     let mut states = targets
         .keys()
@@ -877,6 +921,11 @@ fn validate_events(
             &mut reviewed_sessions,
             expected_sequence,
         )?;
+    }
+    for (target_id, state) in &states {
+        if *state == LifecycleState::Active {
+            require_rotation_topic(target_id, targets, rotation_topics)?;
+        }
     }
     Ok(())
 }
@@ -930,6 +979,36 @@ fn validate_event_transition(
         "revision" => revise_target(payload, target_id, state, targets, states),
         "review_completed" => record_review(payload, target_id, state, targets, reviewed_sessions),
         _ => Err(invalid_event_payload(event_type)),
+    }
+}
+
+fn require_rotation_topic(
+    target_id: &str,
+    targets: &BTreeMap<String, &Value>,
+    rotation_topics: Option<&BTreeMap<String, String>>,
+) -> Result<(), ValidationError> {
+    let Some(rotation_topics) = rotation_topics else {
+        return Ok(());
+    };
+    let topic = targets
+        .get(target_id)
+        .and_then(|target| target.get("topic"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ValidationError::new(
+                "unknown_target_reference",
+                "rotation target is missing",
+                json!({"target_id": target_id}),
+            )
+        })?;
+    if rotation_topics.contains_key(topic) {
+        Ok(())
+    } else {
+        Err(ValidationError::new(
+            "unmapped_active_topic",
+            "every active target topic must belong to a rotation group",
+            json!({ "target_id": target_id, "topic": topic }),
+        ))
     }
 }
 

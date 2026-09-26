@@ -44,6 +44,158 @@ fn revision_event(
     })
 }
 
+fn policy_four_configuration() -> Value {
+    let mut value = configuration();
+    value["queue_priority_policy_version"] = json!(4);
+    value["rotation_groups"] =
+        json!({ "rust": { "label": "Rust", "description": "Rust studies", "topics": ["Rust"] } });
+    value
+}
+
+#[test]
+fn policy_four_requires_nonempty_nonoverlapping_closed_rotation_groups() {
+    let mut config = policy_four_configuration();
+    config.as_object_mut().unwrap().remove("rotation_groups");
+    assert_eq!(
+        validate_catalogue(&config, &[], &[]).unwrap_err().code,
+        "invalid_rotation_configuration"
+    );
+    config["rotation_groups"] = json!({});
+    assert_eq!(
+        validate_catalogue(&config, &[], &[]).unwrap_err().code,
+        "invalid_rotation_configuration"
+    );
+    config["rotation_groups"] = json!({ "rust": { "label": "Rust", "description": "Rust studies", "topics": ["Rust"] }, "also-rust": { "label": "Also Rust", "description": "Overlap", "topics": ["Rust"] } });
+    assert_eq!(
+        validate_catalogue(&config, &[], &[]).unwrap_err().code,
+        "duplicate_rotation_topic"
+    );
+    for groups in [
+        json!({ "Bad_ID": { "label": "Rust", "description": "Studies", "topics": ["Rust"] } }),
+        json!({ "rust": { "label": " ", "description": "Studies", "topics": ["Rust"] } }),
+        json!({ "rust": { "label": "Rust", "description": "Studies", "topics": ["Rust", "Rust"] } }),
+        json!({ "rust": { "label": "Rust", "description": "Studies", "topics": [] } }),
+        json!({ "rust": { "label": "Rust", "description": "Studies", "topics": ["Rust"], "extra": true } }),
+    ] {
+        config["rotation_groups"] = groups;
+        assert_eq!(
+            validate_catalogue(&config, &[], &[]).unwrap_err().code,
+            "schema_validation_failed"
+        );
+    }
+    assert!(
+        validate_catalogue(
+            &configuration(),
+            &[target_file(target())],
+            &[activation_event()]
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn rotation_group_ids_match_the_grouping_checker_boundary_without_capping_group_count() {
+    let mut config = policy_four_configuration();
+    let group = json!({ "label": "Rust", "description": "Rust studies", "topics": ["Rust"] });
+    for id in [
+        "ambiguous".to_owned(),
+        "no-suitable-group".to_owned(),
+        "constructor".to_owned(),
+        "prototype".to_owned(),
+        "a".repeat(81),
+    ] {
+        config["rotation_groups"] = json!({id.clone(): group});
+        assert_eq!(
+            validate_catalogue(&config, &[], &[]).unwrap_err().code,
+            "schema_validation_failed",
+            "unexpected acceptance of group ID {id}"
+        );
+    }
+
+    let valid_groups = (0..21)
+        .map(|index| {
+            (
+                format!("group-{index}"),
+                json!({ "label": "Group", "description": "Group studies", "topics": [format!("Topic {index}")] }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    config["rotation_groups"] = json!(valid_groups);
+    validate_catalogue(&config, &[], &[]).expect("the engine has no checker group-count cap");
+    config["rotation_groups"] = json!({ "a".repeat(80): group });
+    validate_catalogue(&config, &[], &[]).expect("an 80-character group ID is valid");
+}
+
+#[test]
+fn policy_four_rejects_unmapped_activation_active_revision_and_resume() {
+    let mut config = policy_four_configuration();
+    config["rotation_groups"]["rust"]["topics"] = json!(["Other"]);
+    assert_eq!(
+        validate_catalogue(&config, &[target_file(target())], &[activation_event()])
+            .unwrap_err()
+            .code,
+        "unmapped_active_topic"
+    );
+
+    config = policy_four_configuration();
+    let original = target();
+    let mut successor = target();
+    successor["id"] = json!("rust-borrow.r2");
+    successor["replaces_target_id"] = original["id"].clone();
+    successor["topic"] = json!("Unmapped");
+    let revision = revision_event(2, original["id"].as_str().unwrap(), &successor, false);
+    let files = [
+        target_file(original.clone()),
+        target_file(successor.clone()),
+    ];
+    assert_eq!(
+        validate_catalogue(&config, &files, &[activation_event(), revision.clone()])
+            .unwrap_err()
+            .code,
+        "unmapped_active_topic"
+    );
+
+    let pause = json!({"schema_version":1,"sequence":2,"event_type":"pause","occurred_at":"2026-09-02T12:00:00.000Z","target_id":original["id"],"payload":{"reason":"Pause"}});
+    let mut paused_revision = revision;
+    paused_revision["sequence"] = json!(3);
+    validate_catalogue(
+        &config,
+        &files,
+        &[activation_event(), pause.clone(), paused_revision.clone()],
+    )
+    .expect("paused unmapped successor is allowed");
+    let resume = json!({"schema_version":1,"sequence":4,"event_type":"resume","occurred_at":"2026-09-02T12:00:00.000Z","target_id":successor["id"],"payload":{"reason":"Resume"}});
+    assert_eq!(
+        validate_catalogue(
+            &config,
+            &files,
+            &[activation_event(), pause, paused_revision, resume]
+        )
+        .unwrap_err()
+        .code,
+        "unmapped_active_topic"
+    );
+
+    let mut unmapped_past = policy_four_configuration();
+    unmapped_past["rotation_groups"]["rust"]["topics"] = json!(["Unmapped"]);
+    let paused = json!({"schema_version":1,"sequence":2,"event_type":"pause","occurred_at":"2026-09-02T12:00:00.000Z","target_id":original["id"],"payload":{"reason":"Pause"}});
+    validate_catalogue(
+        &unmapped_past,
+        &[target_file(original.clone())],
+        &[activation_event(), paused],
+    )
+    .expect("historically active but currently paused topic may be unmapped");
+    validate_catalogue(
+        &unmapped_past,
+        &files,
+        &[
+            activation_event(),
+            revision_event(2, original["id"].as_str().unwrap(), &successor, false),
+        ],
+    )
+    .expect("retired predecessor may be unmapped when active successor is mapped");
+}
+
 fn review_event(sequence: u64, target_id: &str, session_id: &str) -> Value {
     json!({
         "schema_version": 1,

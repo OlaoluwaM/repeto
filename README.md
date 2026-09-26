@@ -128,6 +128,54 @@ taught. An exact `--target ID` still selects a held-back target directly and
 reports it as `early`. Upgrade the executable before setting this
 configuration; older builds reject policy 3.
 
+Set `queue_priority_policy_version: 4` to keep policy 3's allocation and
+12-hour review hold while rotating first reviews across configured groups.
+Policy 4 requires `rotation_groups` in `config.yaml`:
+
+```yaml
+rotation_groups:
+  foundations:
+    label: Foundations
+    description: Core concepts studied across several topics.
+    topics:
+      - Logic
+      - Discrete Mathematics
+  programming:
+    label: Programming
+    description: Programming language and software topics.
+    topics:
+      - Rust
+```
+
+Group IDs use lowercase kebab case, at most 80 characters. The IDs
+`ambiguous`, `no-suitable-group`, `constructor`, and `prototype` are reserved
+for the grouping check's result vocabulary and JavaScript-safe interchange.
+Labels, descriptions, and exact topic names
+must be nonblank. Each group has at least one unique topic; no topic may belong
+to two groups. Every active target's topic must be mapped. Activation, resume,
+and an active revision fail if they would introduce an unmapped active topic.
+Paused and retired targets retain their history, and their past first reviews
+still count when their topics remain mapped.
+
+First-review groups with no completed first review come first, followed by the
+least recently first-reviewed group. Event timestamps order history, with event
+sequence resolving a tie. Within a group the same rule orders topics, then
+target IDs. Multiple first slots cycle through eligible groups and topics
+before reusing one. Queue reads do not advance a stored cursor; only a completed
+first review changes historical recency. An explicit carried revision retains
+the predecessor's effective first-review status without creating a new first
+review or moving its original event to the successor's topic.
+
+The highest-ranked due target always keeps its place when a due slot exists.
+For later due slots, a group absent from the selected first and due targets is
+preferred only within the same retrievability band and calibration-priority
+bucket. Exact retrievability and ID break ties after that preference. Due
+targets precede first reviews in the output. Every policy-4 ranked target adds
+`rotation_group: {id, label}` and `rank_details.rotation`, which contains
+`group_last_first_review`, `topic_last_first_review` (each a millisecond UTC
+`occurred_at` and event `sequence`, or `null`), and `diversity_preferred`.
+Policies 1–3 omit these fields.
+
 Inspect one target before a prompt:
 
 ```sh

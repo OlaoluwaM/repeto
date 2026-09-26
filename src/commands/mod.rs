@@ -14,7 +14,7 @@ use repeto::{
         DerivedStudyState, EventRequest, EventRequestKind, replay, write_event_with_locked_replay,
     },
     output,
-    queue::{QueueRequest, QueueTarget, build_queue},
+    queue::{QueueRequest, QueueTarget, build_queue_with_history},
     scheduler::{LatestReview, ScheduleRequest, Scheduler},
     validation::{
         Catalogue, SchemaKind, TargetFile, load_catalogue, load_catalogue_for_source_preflight,
@@ -101,9 +101,10 @@ fn queue(
             latest_review: latest_review.as_ref(),
         })
         .collect::<Vec<_>>();
-    let output = build_queue(
+    let output = build_queue_with_history(
         &catalogue.configuration,
         &targets,
+        &catalogue.events,
         QueueRequest {
             evaluated_at,
             topic,

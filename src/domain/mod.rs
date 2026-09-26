@@ -99,11 +99,13 @@ impl fmt::Display for NonBlankStringError {
 impl std::error::Error for NonBlankStringError {}
 
 /// Rust representations generated at build time from `schemas/v1`.
-// typify emits these generated implementation/layout patterns.
+// typify emits these generated implementation/layout patterns. A property-name
+// length/exclusion check can place its generated regex static after statements.
 #[allow(
     clippy::default_trait_access,
     clippy::derivable_impls,
-    clippy::large_enum_variant
+    clippy::large_enum_variant,
+    clippy::items_after_statements
 )]
 pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/schema_types.rs"));

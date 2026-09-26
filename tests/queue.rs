@@ -615,12 +615,12 @@ fn mixed_queue_filters_before_allocation_and_preserves_explicit_overrides() {
 
 #[test]
 fn queue_policy_configuration_rejects_unsupported_versions() {
-    for version in [json!(1), json!(2), json!(3)] {
+    for version in [json!(1), json!(2), json!(3), json!(4)] {
         let mut value = serde_json::to_value(config()).expect("configuration JSON");
         value["queue_priority_policy_version"] = version;
         assert!(parse_document::<RepetoConfiguration>(SchemaKind::Configuration, value).is_ok());
     }
-    for version in [json!(0), json!(4), json!(1.5), json!("2")] {
+    for version in [json!(0), json!(5), json!(1.5), json!("2")] {
         let mut value = serde_json::to_value(config()).expect("configuration JSON");
         value["queue_priority_policy_version"] = version;
         assert!(parse_document::<RepetoConfiguration>(SchemaKind::Configuration, value).is_err());
