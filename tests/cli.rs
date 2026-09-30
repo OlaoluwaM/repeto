@@ -80,12 +80,11 @@ fn add_successor(data: &Path) {
     let successor = json!({
         "schema_version":1,
         "id":"target.r2",
-        "replaces_target_id":"target",
         "topic":"Rust",
-        "scope":"Ownership revision",
-        "retrieval_demand":{"kind":"explain","description":"Explain revised ownership."},
-        "canonical_question":"What is revised ownership?",
-        "correct_answer_requirements":{"rule":"Names one revised ownership rule."},
+        "scope":"Ownership second wording",
+        "retrieval_demand":{"kind":"explain","description":"Explain reworded ownership."},
+        "canonical_question":"What is reworded ownership?",
+        "correct_answer_requirements":{"rule":"Names one reworded ownership rule."},
         "source_notes":["Cards/note.md"]
     });
     fs::write(
@@ -177,7 +176,7 @@ fn persisted_reviews_remain_valid_across_float_roundtrips() {
 }
 
 #[test]
-fn unordered_target_sets_survive_activation_revision_reload_and_unrelated_writes() {
+fn unordered_target_sets_survive_activation_retirement_reload_and_unrelated_writes() {
     let data = setup();
     for path in ["Cards/a.md", "Cards/z.md"] {
         fs::write(data.path().join("notes").join(path), "# Source").expect("source note");
@@ -225,11 +224,20 @@ fn unordered_target_sets_survive_activation_revision_reload_and_unrelated_writes
         data.path(),
         &[
             "target",
-            "revise",
+            "retire",
             "target",
-            "target.r2",
             "--reason",
             "Exercise an unordered successor.",
+            "--at",
+            "2026-09-04T12:00:00.000Z",
+        ],
+    );
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "activate",
+            "target.r2",
             "--at",
             "2026-09-04T12:00:00.000Z",
         ],
@@ -373,77 +381,6 @@ fn review_record_input_is_json_only_regardless_of_file_extension() {
 }
 
 #[test]
-fn revision_exact_retry_is_byte_stable_and_changed_identity_conflicts() {
-    let data = setup();
-    add_successor(data.path());
-    add_retired_target(data.path());
-    activate(data.path());
-    let args = [
-        "target",
-        "revise",
-        "target",
-        "target.r2",
-        "--reason",
-        "Clarify scope.",
-        "--carry-history",
-        "--at",
-        "2026-09-03T12:00:00.000Z",
-    ];
-    assert_eq!(assert_ok(data.path(), &args)["disposition"], "committed");
-    let bytes = fs::read(data.path().join("events.jsonl")).expect("event bytes");
-    fs::remove_file(data.path().join("notes/Cards/note.md")).expect("stale successor source");
-    assert_eq!(assert_ok(data.path(), &args)["disposition"], "retried");
-    assert_eq!(
-        fs::read(data.path().join("events.jsonl")).expect("event bytes"),
-        bytes
-    );
-    assert_error(
-        data.path(),
-        &[
-            "target",
-            "revise",
-            "target",
-            "target.r2",
-            "--reason",
-            "Other reason.",
-            "--carry-history",
-            "--at",
-            "2026-09-03T12:00:00.000Z",
-        ],
-        "revision_conflict",
-    );
-    assert_error(
-        data.path(),
-        &[
-            "target",
-            "revise",
-            "target",
-            "target.r2",
-            "--reason",
-            "Clarify scope.",
-            "--carry-history",
-            "--at",
-            "2026-09-03T12:00:01.000Z",
-        ],
-        "revision_conflict",
-    );
-    assert_error(
-        data.path(),
-        &[
-            "target",
-            "revise",
-            "target",
-            "target.r2",
-            "--reason",
-            "Clarify scope.",
-            "--at",
-            "2026-09-03T12:00:00.000Z",
-        ],
-        "revision_conflict",
-    );
-}
-
-#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "one end-to-end test proves the source-path repair boundary"
@@ -556,8 +493,8 @@ fn check_aggregates_all_stale_sources_while_structural_and_repair_paths_remain_a
         ],
     );
 
-    // A stale predecessor does not deadlock a repair revision when its
-    // replacement definition has valid sources.
+    // A stale predecessor does not deadlock a repair when its replacement
+    // definition has valid sources: retiring skips source-path resolution.
     stale_successor["source_notes"] = json!(["Cards/successor.md"]);
     fs::write(data.path().join("notes/Cards/successor.md"), "# Successor").expect("successor note");
     fs::write(
@@ -569,18 +506,27 @@ fn check_aggregates_all_stale_sources_while_structural_and_repair_paths_remain_a
         data.path(),
         &[
             "target",
-            "revise",
+            "retire",
             "target",
-            "target.r2",
             "--reason",
             "Repair stale predecessor.",
             "--at",
-            "2026-09-04T12:00:00.000Z",
+            "2026-09-04T12:02:00.000Z",
+        ],
+    );
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "activate",
+            "target.r2",
+            "--at",
+            "2026-09-04T12:03:00.000Z",
         ],
     );
     assert_eq!(
         assert_ok(data.path(), &["target", "show", "target.r2"])["lifecycle"],
-        "paused"
+        "active"
     );
     assert_ok(data.path(), &["check"]);
 }
@@ -660,9 +606,8 @@ fn check_aggregates_retired_syntax_and_non_retired_file_failures() {
 }
 
 #[test]
-fn review_streak_and_carried_history_are_replayed_and_duplicate_sessions_reject() {
+fn review_streak_is_replayed_and_duplicate_sessions_reject() {
     let data = setup();
-    add_successor(data.path());
     activate(data.path());
     for (index, at) in [
         "2026-09-02T12:00:00.000Z",
@@ -678,48 +623,20 @@ fn review_streak_and_carried_history_are_replayed_and_duplicate_sessions_reject(
     let original = assert_ok(data.path(), &["target", "show", "target"]);
     assert_eq!(original["needs_study"], true);
     assert_eq!(original["consecutive_non_correct"], 3);
-    assert_ok(
-        data.path(),
-        &[
-            "target",
-            "revise",
-            "target",
-            "target.r2",
-            "--reason",
-            "Carry history.",
-            "--carry-history",
-            "--at",
-            "2026-09-05T12:00:00.000Z",
-        ],
-    );
-    let successor = assert_ok(data.path(), &["target", "show", "target.r2"]);
-    assert_eq!(successor["needs_study"], true);
-    assert_eq!(successor["consecutive_non_correct"], 3);
-    let mut carried_retry = review(false, "session-0", "2026-09-05T12:00:00.000Z");
-    carried_retry["target_id"] = json!("target.r2");
-    let carried_retry = write_review(data.path(), &carried_retry);
-    assert_error(
-        data.path(),
-        &["review", "record", "--input", &carried_retry],
-        "duplicate_effective_review_session",
-    );
-
     let mut copied = fs::read_to_string(data.path().join("events.jsonl"))
         .expect("event history")
         .lines()
         .nth(1)
         .map(|line| serde_json::from_str::<Value>(line).expect("review event"))
         .expect("first review");
-    copied["sequence"] = json!(6);
-    copied["target_id"] = json!("target.r2");
+    copied["sequence"] = json!(5);
     let mut bytes = fs::read_to_string(data.path().join("events.jsonl")).expect("event history");
     bytes.push_str(&copied.to_string());
     bytes.push('\n');
     fs::write(data.path().join("events.jsonl"), bytes).expect("injected event");
-    let catalogue = load_catalogue(data.path()).expect("structural load");
     assert_eq!(
-        replay(&catalogue)
-            .expect_err("duplicate effective carried session")
+        load_catalogue(data.path())
+            .expect_err("duplicate effective session")
             .code,
         "duplicate_effective_review_session"
     );
@@ -1272,36 +1189,6 @@ fn flag_study_flag_clears_on_a_correct_review() {
     let shown = assert_ok(data.path(), &["target", "show", "target"]);
     assert_eq!(shown["needs_study"], false);
     assert_eq!(shown["consecutive_non_correct"], 0);
-}
-
-#[test]
-fn flag_study_flag_carries_through_a_history_carrying_revision() {
-    let data = setup();
-    add_successor(data.path());
-    activate(data.path());
-    flag_study(
-        data.path(),
-        "target",
-        "Needs study before revising.",
-        "2026-09-24T12:00:00.000Z",
-    );
-    assert_ok(
-        data.path(),
-        &[
-            "target",
-            "revise",
-            "target",
-            "target.r2",
-            "--reason",
-            "Carry history.",
-            "--carry-history",
-            "--at",
-            "2026-09-24T12:01:00.000Z",
-        ],
-    );
-
-    let successor = assert_ok(data.path(), &["target", "show", "target.r2"]);
-    assert_eq!(successor["needs_study"], true);
 }
 
 #[test]

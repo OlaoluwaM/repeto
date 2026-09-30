@@ -362,16 +362,6 @@ impl RotationContext {
                 .and_then(Value::as_str)
                 .ok_or_else(|| rotation_error("historical event has no target ID"))?;
             match kind {
-                Some("revision") => {
-                    if event["payload"]["carry_history"] == true {
-                        let successor =
-                            event["payload"]["new_target_id"].as_str().ok_or_else(|| {
-                                rotation_error("historical revision has no successor")
-                            })?;
-                        reviewed
-                            .insert(successor, reviewed.get(target_id).copied().unwrap_or(false));
-                    }
-                }
                 Some("review_completed") if !reviewed.get(target_id).copied().unwrap_or(false) => {
                     reviewed.insert(target_id, true);
                     let topic = target_topics

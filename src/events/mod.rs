@@ -145,17 +145,6 @@ pub enum EventRequestKind {
         /// User-provided reason.
         reason: String,
     },
-    /// Replace a target with its immutable successor definition.
-    Revision {
-        /// Successor target ID.
-        new_target_id: String,
-        /// User-provided reason for the new revision.
-        reason: String,
-        /// Whether the explicit one-to-one revision carries derived history.
-        carry_history: bool,
-        /// Exact successor target YAML rendered as JSON.
-        definition: Value,
-    },
     /// A complete review result after grading and scheduling.
     Review {
         /// Schema-valid review-completed payload, including stored scheduler output.
@@ -171,7 +160,6 @@ impl EventRequestKind {
             Self::Resume { .. } => "resume",
             Self::Retirement { .. } => "retirement",
             Self::NeedsStudyFlag { .. } => "needs_study_flag",
-            Self::Revision { .. } => "revision",
             Self::Review { .. } => "review_completed",
         }
     }
@@ -185,17 +173,6 @@ impl EventRequestKind {
             | Self::NeedsStudyFlag { reason } => {
                 json!({ "reason": reason })
             }
-            Self::Revision {
-                new_target_id,
-                reason,
-                carry_history,
-                definition,
-            } => json!({
-                "new_target_id": new_target_id,
-                "reason": reason,
-                "carry_history": carry_history,
-                "definition": definition,
-            }),
             Self::Review { payload } => payload.clone(),
         }
     }
@@ -217,7 +194,7 @@ pub struct ReviewRecord {
 pub struct DerivedTargetState {
     /// Current lifecycle state.
     pub lifecycle: LifecycleState,
-    /// Completed review records, including explicitly carried history.
+    /// Completed review records.
     pub reviews: Vec<ReviewRecord>,
     /// Latest completed review record, if one exists.
     pub latest_review: Option<ReviewRecord>,
@@ -225,8 +202,6 @@ pub struct DerivedTargetState {
     pub consecutive_non_correct: u32,
     /// Whether the target has reached the three-attempt needs-study threshold.
     pub needs_study: bool,
-    /// Source target ID when this target explicitly carried its history.
-    pub carried_from_target_id: Option<String>,
 }
 
 impl Default for DerivedTargetState {
@@ -237,7 +212,6 @@ impl Default for DerivedTargetState {
             latest_review: None,
             consecutive_non_correct: 0,
             needs_study: false,
-            carried_from_target_id: None,
         }
     }
 }
@@ -626,40 +600,10 @@ fn apply_event(state: &mut DerivedStudyState, event: &Value) -> Result<(), Event
         "resume" => target_state_mut(state, &target_id)?.lifecycle = LifecycleState::Active,
         "retirement" => target_state_mut(state, &target_id)?.lifecycle = LifecycleState::Retired,
         "needs_study_flag" => target_state_mut(state, &target_id)?.needs_study = true,
-        "revision" => apply_revision(state, &target_id, &payload)?,
         "review_completed" => apply_review(state, &target_id, sequence, event, payload)?,
         _ => return Err(malformed_event("unknown event type")),
     }
     state.last_sequence = sequence;
-    Ok(())
-}
-
-fn apply_revision(
-    state: &mut DerivedStudyState,
-    old_target_id: &str,
-    payload: &Value,
-) -> Result<(), EventStoreError> {
-    let new_target_id = payload
-        .get("new_target_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| malformed_event("revision has no new_target_id"))?
-        .to_owned();
-    let carry_history = payload
-        .get("carry_history")
-        .and_then(Value::as_bool)
-        .ok_or_else(|| malformed_event("revision has no carry_history"))?;
-    let previous = target_state_mut(state, old_target_id)?.clone();
-    let new_lifecycle = previous.lifecycle;
-    let successor = target_state_mut(state, &new_target_id)?;
-    successor.lifecycle = new_lifecycle;
-    if carry_history {
-        successor.reviews = previous.reviews;
-        successor.latest_review = previous.latest_review;
-        successor.consecutive_non_correct = previous.consecutive_non_correct;
-        successor.needs_study = previous.needs_study;
-        successor.carried_from_target_id = Some(old_target_id.to_owned());
-    }
-    target_state_mut(state, old_target_id)?.lifecycle = LifecycleState::Retired;
     Ok(())
 }
 
@@ -706,64 +650,7 @@ fn retry_or_noop(
     request: &EventRequest,
 ) -> Result<Option<WriteOutcome>, EventStoreError> {
     if matches!(request.kind, EventRequestKind::Review { .. }) {
-        if let Some(outcome) = review_retry(raw_events, request)? {
-            return Ok(Some(outcome));
-        }
-        let request_payload = request.payload();
-        let session_id = request_payload
-            .get("session_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| malformed_event("review request has no session_id"))?;
-        if derived.target(&request.target_id).is_some_and(|target| {
-            target.reviews.iter().any(|review| {
-                review.payload.get("session_id").and_then(Value::as_str) == Some(session_id)
-            })
-        }) {
-            return Err(EventStoreError::new(
-                "duplicate_effective_review_session",
-                "a carried history already contains this review session",
-                json!({ "target_id": request.target_id, "session_id": session_id }),
-            ));
-        }
-        return Ok(None);
-    }
-
-    if let EventRequestKind::Revision {
-        ref new_target_id, ..
-    } = request.kind
-    {
-        let existing = raw_events.iter().find(|event| {
-            event.get("event_type").and_then(Value::as_str) == Some("revision")
-                && event.get("target_id").and_then(Value::as_str)
-                    == Some(request.target_id.as_str())
-                && event
-                    .get("payload")
-                    .and_then(|payload| payload.get("new_target_id"))
-                    .and_then(Value::as_str)
-                    == Some(new_target_id)
-        });
-        if let Some(existing) = existing {
-            let same = existing.get("occurred_at").and_then(Value::as_str)
-                == Some(
-                    request
-                        .occurred_at
-                        .to_rfc3339_opts(SecondsFormat::Millis, true)
-                        .as_str(),
-                )
-                && existing.get("payload") == Some(&request.payload());
-            return if same {
-                Ok(Some(WriteOutcome {
-                    event: Some(existing.clone()),
-                    disposition: WriteDisposition::Retried,
-                }))
-            } else {
-                Err(EventStoreError::new(
-                    "revision_conflict",
-                    "the old and new target IDs already have different committed revision content",
-                    json!({ "old_target_id": request.target_id, "new_target_id": new_target_id }),
-                ))
-            };
-        }
+        return review_retry(raw_events, request);
     }
 
     let target = derived.target(&request.target_id).ok_or_else(|| {
@@ -784,7 +671,7 @@ fn retry_or_noop(
         EventRequestKind::NeedsStudyFlag { .. } => {
             target.lifecycle == LifecycleState::Active && target.needs_study
         }
-        EventRequestKind::Revision { .. } | EventRequestKind::Review { .. } => false,
+        EventRequestKind::Review { .. } => false,
     };
     Ok(is_noop.then_some(WriteOutcome {
         event: None,

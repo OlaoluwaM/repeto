@@ -77,8 +77,6 @@ repeto [--data-dir PATH] target pause ID --reason TEXT [--at TIMESTAMP]
 repeto [--data-dir PATH] target resume ID --reason TEXT [--at TIMESTAMP]
 repeto [--data-dir PATH] target retire ID --reason TEXT [--at TIMESTAMP]
 repeto [--data-dir PATH] target flag-study ID --reason TEXT [--at TIMESTAMP]
-repeto [--data-dir PATH] target revise OLD_ID NEW_ID --reason TEXT
-  [--carry-history] [--at TIMESTAMP]
 
 repeto [--data-dir PATH] review record --input FILE_OR_STDIN
 ```
@@ -152,8 +150,8 @@ Group IDs use lowercase kebab case, at most 80 characters. The IDs
 for the grouping check's result vocabulary and JavaScript-safe interchange.
 Labels, descriptions, and exact topic names
 must be nonblank. Each group has at least one unique topic; no topic may belong
-to two groups. Every active target's topic must be mapped. Activation, resume,
-and an active revision fail if they would introduce an unmapped active topic.
+to two groups. Every active target's topic must be mapped. Activation and resume
+fail if they would introduce an unmapped active topic.
 Paused and retired targets retain their history, and their past first reviews
 still count when their topics remain mapped.
 
@@ -162,9 +160,7 @@ least recently first-reviewed group. Event timestamps order history, with event
 sequence resolving a tie. Within a group the same rule orders topics, then
 target IDs. Multiple first slots cycle through eligible groups and topics
 before reusing one. Queue reads do not advance a stored cursor; only a completed
-first review changes historical recency. An explicit carried revision retains
-the predecessor's effective first-review status without creating a new first
-review or moving its original event to the successor's topic.
+first review changes historical recency.
 
 The highest-ranked due target always keeps its place when a due slot exists.
 For later due slots, a group absent from the selected first and due targets is
@@ -209,12 +205,9 @@ unflag command: the flag is cleared only by a later `correct` review.
 
 ## Target changes
 
-Active definitions are immutable. Prepare a new target file with an explicit
-`replaces_target_id`, then run `target revise`.
-
-The revision starts fresh unless Olaolu explicitly chose `--carry-history`.
-Revision identity is `old_target_id + new_target_id`; changed retry data returns
-`revision_conflict`. Splits and merges cannot carry history.
+Active definitions are immutable. To change a target, run `target retire` with
+a reason, then prepare a new target file and run `target activate` on it. The
+new target starts with no review history.
 
 ## Determinism
 
@@ -252,7 +245,7 @@ it does not bypass either validation check.
 - Source snapshots or NotebookLM links when reproducible source content becomes
   necessary.
 - A `--human` flag.
-- General migration tooling, including explicit user-controlled history carry.
+- General migration tooling.
 
 ## Out of scope without redesign
 
@@ -260,7 +253,7 @@ it does not bypass either validation check.
 - Multi-writer coordination.
 - Automatic target creation.
 - Generic mutable target metadata.
-- Separate review or revision IDs.
+- Separate review IDs.
 
 Version 1 has no remote repository, published crate, or global installation.
 

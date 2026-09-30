@@ -12,8 +12,8 @@ fn timestamp() -> DateTime<Utc> {
     "2026-09-02T12:00:00.000Z".parse().expect("valid timestamp")
 }
 
-fn target(id: &str, replaces_target_id: Option<&str>) -> Value {
-    let mut target = json!({
+fn target(id: &str) -> Value {
+    json!({
         "schema_version": 1,
         "id": id,
         "topic": "Rust",
@@ -22,11 +22,7 @@ fn target(id: &str, replaces_target_id: Option<&str>) -> Value {
         "canonical_question": "What is ownership?",
         "correct_answer_requirements": {"rule": "Names one ownership rule."},
         "source_notes": ["Cards/note.md"]
-    });
-    if let Some(replaces_target_id) = replaces_target_id {
-        target["replaces_target_id"] = json!(replaces_target_id);
-    }
-    target
+    })
 }
 
 fn write_catalogue(data: &Path, targets: &[Value]) {
@@ -63,10 +59,10 @@ fn write_catalogue(data: &Path, targets: &[Value]) {
 }
 
 #[test]
-fn revision_replays_from_raw_validated_json_and_permits_a_successor_write() {
+fn retirement_and_activation_replay_from_raw_validated_json_and_permit_later_writes() {
     let data = tempfile::tempdir().expect("temporary data directory");
-    let original = target("target", None);
-    let successor = target("target.r2", Some("target"));
+    let original = target("target");
+    let successor = target("target.r2");
     write_catalogue(data.path(), &[original.clone(), successor.clone()]);
     write_event(
         data.path(),
@@ -84,18 +80,26 @@ fn revision_replays_from_raw_validated_json_and_permits_a_successor_write() {
         &EventRequest::new(
             "target",
             timestamp(),
-            EventRequestKind::Revision {
-                new_target_id: "target.r2".to_owned(),
+            EventRequestKind::Retirement {
                 reason: "Clarify scope.".to_owned(),
-                carry_history: false,
+            },
+        ),
+    )
+    .expect("retirement");
+    write_event(
+        data.path(),
+        &EventRequest::new(
+            "target.r2",
+            timestamp(),
+            EventRequestKind::Activation {
                 definition: successor,
             },
         ),
     )
-    .expect("revision");
+    .expect("successor activation");
 
-    let catalogue = load_catalogue(data.path()).expect("load after revision");
-    let replayed = replay(&catalogue).expect("replay after revision");
+    let catalogue = load_catalogue(data.path()).expect("load after retirement");
+    let replayed = replay(&catalogue).expect("replay after retirement");
     assert_eq!(
         replayed.target("target").expect("old target").lifecycle,
         LifecycleState::Retired

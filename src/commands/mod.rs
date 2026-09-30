@@ -179,27 +179,6 @@ fn target(data_directory: &Path, command: TargetCommand) -> Result<Value, CliErr
                 ))
             })
         }
-        TargetCommand::Revise(arguments) => {
-            let occurred_at = crate::clock::resolve(arguments.at.as_deref())?;
-            lifecycle_write(data_directory, move |catalogue, state| {
-                // External source paths gate creating a revision, not resolving
-                // the immutable retry key of one already committed.
-                if state
-                    .target(&arguments.new_id)
-                    .map_or(LifecycleState::Draft, |target| target.lifecycle)
-                    == LifecycleState::Draft
-                {
-                    validate_sources(catalogue, std::iter::once(arguments.new_id.as_str()))?;
-                }
-                let kind = EventRequestKind::Revision {
-                    new_target_id: arguments.new_id.clone(),
-                    reason: arguments.reason,
-                    carry_history: arguments.carry_history,
-                    definition: definition_value(catalogue, &arguments.new_id)?,
-                };
-                Ok(EventRequest::new(arguments.old_id, occurred_at, kind))
-            })
-        }
     }
 }
 
@@ -245,7 +224,6 @@ fn target_show(data_directory: &Path, id: &str) -> Result<Value, CliError> {
         "lifecycle": lifecycle_name(target.lifecycle),
         "needs_study": target.needs_study,
         "consecutive_non_correct": target.consecutive_non_correct,
-        "carried_from_target_id": target.carried_from_target_id,
         "latest_verification_sources": latest_verification_sources,
     }))
 }

@@ -23,27 +23,6 @@ fn target_file(document: Value) -> TargetFile {
     }
 }
 
-fn revision_event(
-    sequence: u64,
-    old_target_id: &str,
-    new_target: &Value,
-    carry_history: bool,
-) -> Value {
-    json!({
-        "schema_version": 1,
-        "sequence": sequence,
-        "event_type": "revision",
-        "occurred_at": "2026-09-02T12:00:00.000Z",
-        "target_id": old_target_id,
-        "payload": {
-            "new_target_id": new_target["id"].clone(),
-            "reason": "The target wording changed.",
-            "carry_history": carry_history,
-            "definition": new_target
-        }
-    })
-}
-
 fn policy_four_configuration() -> Value {
     let mut value = configuration();
     value["queue_priority_policy_version"] = json!(4);
@@ -127,7 +106,7 @@ fn rotation_group_ids_match_the_grouping_checker_boundary_without_capping_group_
 }
 
 #[test]
-fn policy_four_rejects_unmapped_activation_active_revision_and_resume() {
+fn policy_four_rejects_unmapped_activation_and_resume() {
     let mut config = policy_four_configuration();
     config["rotation_groups"]["rust"]["topics"] = json!(["Other"]);
     assert_eq!(
@@ -137,63 +116,24 @@ fn policy_four_rejects_unmapped_activation_active_revision_and_resume() {
         "unmapped_active_topic"
     );
 
-    config = policy_four_configuration();
     let original = target();
-    let mut successor = target();
-    successor["id"] = json!("rust-borrow.r2");
-    successor["replaces_target_id"] = original["id"].clone();
-    successor["topic"] = json!("Unmapped");
-    let revision = revision_event(2, original["id"].as_str().unwrap(), &successor, false);
-    let files = [
-        target_file(original.clone()),
-        target_file(successor.clone()),
-    ];
+    let files = [target_file(original.clone())];
+    let pause = json!({"schema_version":1,"sequence":2,"event_type":"pause","occurred_at":"2026-09-02T12:00:00.000Z","target_id":original["id"],"payload":{"reason":"Pause"}});
+    let resume = json!({"schema_version":1,"sequence":3,"event_type":"resume","occurred_at":"2026-09-02T12:00:00.000Z","target_id":original["id"],"payload":{"reason":"Resume"}});
+    let mut unmapped_past = policy_four_configuration();
+    unmapped_past["rotation_groups"]["rust"]["topics"] = json!(["Unmapped"]);
+    validate_catalogue(&unmapped_past, &files, &[activation_event(), pause.clone()])
+        .expect("historically active but currently paused topic may be unmapped");
     assert_eq!(
-        validate_catalogue(&config, &files, &[activation_event(), revision.clone()])
+        validate_catalogue(&unmapped_past, &files, &[activation_event(), pause, resume])
             .unwrap_err()
             .code,
         "unmapped_active_topic"
     );
 
-    let pause = json!({"schema_version":1,"sequence":2,"event_type":"pause","occurred_at":"2026-09-02T12:00:00.000Z","target_id":original["id"],"payload":{"reason":"Pause"}});
-    let mut paused_revision = revision;
-    paused_revision["sequence"] = json!(3);
-    validate_catalogue(
-        &config,
-        &files,
-        &[activation_event(), pause.clone(), paused_revision.clone()],
-    )
-    .expect("paused unmapped successor is allowed");
-    let resume = json!({"schema_version":1,"sequence":4,"event_type":"resume","occurred_at":"2026-09-02T12:00:00.000Z","target_id":successor["id"],"payload":{"reason":"Resume"}});
-    assert_eq!(
-        validate_catalogue(
-            &config,
-            &files,
-            &[activation_event(), pause, paused_revision, resume]
-        )
-        .unwrap_err()
-        .code,
-        "unmapped_active_topic"
-    );
-
-    let mut unmapped_past = policy_four_configuration();
-    unmapped_past["rotation_groups"]["rust"]["topics"] = json!(["Unmapped"]);
-    let paused = json!({"schema_version":1,"sequence":2,"event_type":"pause","occurred_at":"2026-09-02T12:00:00.000Z","target_id":original["id"],"payload":{"reason":"Pause"}});
-    validate_catalogue(
-        &unmapped_past,
-        &[target_file(original.clone())],
-        &[activation_event(), paused],
-    )
-    .expect("historically active but currently paused topic may be unmapped");
-    validate_catalogue(
-        &unmapped_past,
-        &files,
-        &[
-            activation_event(),
-            revision_event(2, original["id"].as_str().unwrap(), &successor, false),
-        ],
-    )
-    .expect("retired predecessor may be unmapped when active successor is mapped");
+    let retirement = json!({"schema_version":1,"sequence":2,"event_type":"retirement","occurred_at":"2026-09-02T12:00:00.000Z","target_id":original["id"],"payload":{"reason":"Retire"}});
+    validate_catalogue(&unmapped_past, &files, &[activation_event(), retirement])
+        .expect("retired target topic may be unmapped");
 }
 
 fn review_event(sequence: u64, target_id: &str, session_id: &str) -> Value {
@@ -339,7 +279,7 @@ fn structural_validation_rejects_malformed_source_paths_without_reading_files() 
 }
 
 #[test]
-fn rejects_duplicate_ids_and_missing_or_cyclic_revision_links() {
+fn rejects_duplicate_ids() {
     let duplicate = target();
     let error = validate_catalogue(
         &configuration(),
@@ -348,34 +288,6 @@ fn rejects_duplicate_ids_and_missing_or_cyclic_revision_links() {
     )
     .unwrap_err();
     assert_eq!(error.code, "duplicate_target_id");
-
-    let mut missing = target();
-    missing["replaces_target_id"] = json!("not-present");
-    let error = validate_catalogue(&configuration(), &[target_file(missing)], &[]).unwrap_err();
-    assert_eq!(error.code, "missing_revision_target");
-
-    let mut first = target();
-    first["id"] = json!("first");
-    first["replaces_target_id"] = json!("second");
-    let mut second = target();
-    second["id"] = json!("second");
-    second["replaces_target_id"] = json!("first");
-    let error = validate_catalogue(
-        &configuration(),
-        &[
-            TargetFile {
-                path: PathBuf::from("first.yaml"),
-                document: first,
-            },
-            TargetFile {
-                path: PathBuf::from("second.yaml"),
-                document: second,
-            },
-        ],
-        &[],
-    )
-    .unwrap_err();
-    assert_eq!(error.code, "revision_cycle");
 }
 
 #[test]
@@ -490,91 +402,46 @@ fn rejects_duplicate_reviews_for_one_target_and_session() {
     assert_eq!(error.code, "duplicate_effective_review_session");
 }
 
-#[test]
-fn revision_from_active_activates_the_replacement() {
-    let old_target = target();
-    let mut replacement = target();
-    replacement["id"] = json!("rust-borrow.r2");
-    replacement["replaces_target_id"] = json!("rust-borrow");
-    let events = [
-        activation_event(),
-        revision_event(2, "rust-borrow", &replacement, false),
-        review_event(3, "rust-borrow.r2", "session-2"),
-    ];
+fn lifecycle_event(sequence: u64, event_type: &str, target_id: &str) -> Value {
+    json!({
+        "schema_version": 1,
+        "sequence": sequence,
+        "event_type": event_type,
+        "occurred_at": "2026-09-02T12:00:00.000Z",
+        "target_id": target_id,
+        "payload": { "reason": "Lifecycle change." }
+    })
+}
 
-    validate_catalogue(
-        &configuration(),
-        &[target_file(old_target), target_file(replacement)],
-        &events,
-    )
-    .unwrap();
+fn successor_activation(sequence: u64, successor: &Value) -> Value {
+    let mut activation = activation_event();
+    activation["sequence"] = json!(sequence);
+    activation["target_id"] = successor["id"].clone();
+    activation["payload"] = json!({ "definition": successor });
+    activation
 }
 
 #[test]
-fn revision_from_paused_preserves_the_replacement_pause() {
+fn retiring_an_active_or_paused_target_lets_a_new_target_activate_and_be_reviewed() {
     let old_target = target();
-    let mut replacement = target();
-    replacement["id"] = json!("rust-borrow.r2");
-    replacement["replaces_target_id"] = json!("rust-borrow");
-    let mut pause = activation_event();
-    pause["sequence"] = json!(2);
-    pause["event_type"] = json!("pause");
-    pause["payload"] = json!({ "reason": "Deferred." });
-    let mut resume = activation_event();
-    resume["sequence"] = json!(4);
-    resume["event_type"] = json!("resume");
-    resume["target_id"] = json!("rust-borrow.r2");
-    resume["payload"] = json!({ "reason": "Ready again." });
-    let events = [
+    let mut successor = target();
+    successor["id"] = json!("rust-borrow.r2");
+    let files = [target_file(old_target), target_file(successor.clone())];
+
+    let from_active = [
         activation_event(),
-        pause,
-        revision_event(3, "rust-borrow", &replacement, false),
-        resume,
+        lifecycle_event(2, "retirement", "rust-borrow"),
+        successor_activation(3, &successor),
+        review_event(4, "rust-borrow.r2", "session-2"),
+    ];
+    validate_catalogue(&configuration(), &files, &from_active).unwrap();
+
+    let from_paused = [
+        activation_event(),
+        lifecycle_event(2, "pause", "rust-borrow"),
+        lifecycle_event(3, "retirement", "rust-borrow"),
+        successor_activation(4, &successor),
         review_event(5, "rust-borrow.r2", "session-3"),
     ];
-
-    validate_catalogue(
-        &configuration(),
-        &[target_file(old_target), target_file(replacement)],
-        &events,
-    )
-    .unwrap();
-}
-
-#[test]
-fn rejects_revision_payloads_with_a_broken_link_or_missing_carry_history() {
-    let old_target = target();
-    let mut replacement = target();
-    replacement["id"] = json!("rust-borrow.r2");
-    replacement["replaces_target_id"] = json!("rust-borrow");
-    let mut revision = revision_event(2, "rust-borrow", &replacement, false);
-    revision["payload"]["carry_history"] = Value::Null;
-    let error = validate_catalogue(
-        &configuration(),
-        &[
-            target_file(old_target.clone()),
-            target_file(replacement.clone()),
-        ],
-        &[activation_event(), revision],
-    )
-    .unwrap_err();
-    assert_eq!(error.code, "schema_validation_failed");
-
-    let mut unrelated_target = target();
-    unrelated_target["id"] = json!("rust-borrow.r0");
-    replacement["replaces_target_id"] = json!("rust-borrow.r0");
-    let error = validate_catalogue(
-        &configuration(),
-        &[
-            target_file(old_target),
-            target_file(replacement.clone()),
-            target_file(unrelated_target),
-        ],
-        &[
-            activation_event(),
-            revision_event(2, "rust-borrow", &replacement, false),
-        ],
-    )
-    .unwrap_err();
-    assert_eq!(error.code, "invalid_revision_link");
+    validate_catalogue(&configuration(), &files, &from_paused).unwrap();
 }

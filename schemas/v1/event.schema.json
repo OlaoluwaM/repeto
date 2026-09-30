@@ -15,7 +15,6 @@
         "pause",
         "resume",
         "retirement",
-        "revision",
         "review_completed",
         "needs_study_flag"
       ]
@@ -35,17 +34,6 @@
           "additionalProperties": false,
           "required": ["reason"],
           "properties": { "reason": { "$ref": "#/$defs/NonBlankString" } }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["new_target_id", "reason", "carry_history", "definition"],
-          "properties": {
-            "new_target_id": { "$ref": "#/$defs/NonBlankString" },
-            "reason": { "$ref": "#/$defs/NonBlankString" },
-            "carry_history": { "type": "boolean" },
-            "definition": { "$ref": "urn:repeto:schema:v1:target" }
-          }
         },
         {
           "type": "object",

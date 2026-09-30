@@ -466,7 +466,6 @@ fn validate_catalogue_without_source_syntax(
         }
     }
 
-    validate_revision_graph(&targets)?;
     validate_events(events, &targets, rotation_topics.as_ref())
 }
 
@@ -850,41 +849,6 @@ fn validate_target_filename(path: &Path, id: &str) -> Result<(), ValidationError
     }
 }
 
-fn validate_revision_graph(targets: &BTreeMap<String, &Value>) -> Result<(), ValidationError> {
-    for (id, target) in targets {
-        let Some(replaced_id) = target.get("replaces_target_id").and_then(Value::as_str) else {
-            continue;
-        };
-        if !targets.contains_key(replaced_id) {
-            return Err(ValidationError::new(
-                "missing_revision_target",
-                "a replacement target must exist in the catalogue",
-                json!({ "target_id": id, "replaces_target_id": replaced_id }),
-            ));
-        }
-    }
-
-    for start_id in targets.keys() {
-        let mut seen = BTreeSet::new();
-        let mut current_id = start_id.as_str();
-        while let Some(next_id) = targets
-            .get(current_id)
-            .and_then(|target| target.get("replaces_target_id"))
-            .and_then(Value::as_str)
-        {
-            if !seen.insert(current_id) || next_id == start_id {
-                return Err(ValidationError::new(
-                    "revision_cycle",
-                    "replacement links must not form a cycle",
-                    json!({ "target_id": start_id }),
-                ));
-            }
-            current_id = next_id;
-        }
-    }
-    Ok(())
-}
-
 fn validate_events(
     events: &[Value],
     targets: &BTreeMap<String, &Value>,
@@ -976,7 +940,6 @@ fn validate_event_transition(
         ),
         "retirement" => retire_target(payload, target_id, state, states),
         "needs_study_flag" => flag_study_target(payload, target_id, state),
-        "revision" => revise_target(payload, target_id, state, targets, states),
         "review_completed" => record_review(payload, target_id, state, targets, reviewed_sessions),
         _ => Err(invalid_event_payload(event_type)),
     }
@@ -1021,17 +984,6 @@ fn activate_target(
 ) -> Result<(), ValidationError> {
     require_payload_keys(payload, &["definition"], "activation")?;
     require_state(state, LifecycleState::Draft, "activation", target_id)?;
-    if targets
-        .get(target_id)
-        .and_then(|target| target.get("replaces_target_id"))
-        .is_some()
-    {
-        return Err(ValidationError::new(
-            "event_payload_mismatch",
-            "a replacement target must enter the catalogue through a revision event",
-            json!({ "target_id": target_id }),
-        ));
-    }
     validate_event_definition(payload, target_id, targets)?;
     states.insert(target_id.to_owned(), LifecycleState::Active);
     Ok(())
@@ -1073,50 +1025,6 @@ fn flag_study_target(
 ) -> Result<(), ValidationError> {
     require_payload_keys(payload, &["reason"], "needs_study_flag")?;
     require_state(state, LifecycleState::Active, "needs_study_flag", target_id)?;
-    Ok(())
-}
-
-fn revise_target(
-    payload: &Value,
-    target_id: &str,
-    state: LifecycleState,
-    targets: &BTreeMap<String, &Value>,
-    states: &mut BTreeMap<String, LifecycleState>,
-) -> Result<(), ValidationError> {
-    require_payload_keys(
-        payload,
-        &["new_target_id", "reason", "carry_history", "definition"],
-        "revision",
-    )?;
-    if !matches!(state, LifecycleState::Active | LifecycleState::Paused) {
-        return Err(illegal_transition("revision", target_id, state));
-    }
-    let new_target_id = payload
-        .get("new_target_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid_event_payload("revision"))?;
-    let replacement_link = targets
-        .get(new_target_id)
-        .and_then(|target| target.get("replaces_target_id"))
-        .and_then(Value::as_str);
-    if replacement_link != Some(target_id) {
-        return Err(ValidationError::new(
-            "invalid_revision_link",
-            "revision event must match the replacement target link",
-            json!({ "target_id": target_id, "new_target_id": new_target_id }),
-        ));
-    }
-    let new_state = states.get(new_target_id).copied().ok_or_else(|| {
-        ValidationError::new(
-            "unknown_target_reference",
-            "revision new_target_id must reference a catalogue target",
-            json!({ "new_target_id": new_target_id }),
-        )
-    })?;
-    require_state(new_state, LifecycleState::Draft, "revision", new_target_id)?;
-    validate_event_definition(payload, new_target_id, targets)?;
-    states.insert(target_id.to_owned(), LifecycleState::Retired);
-    states.insert(new_target_id.to_owned(), state);
     Ok(())
 }
 
@@ -1173,7 +1081,7 @@ fn validate_event_definition(
     } else {
         Err(ValidationError::new(
             "immutable_target_mismatch",
-            "activation or revision definition must match the catalogue target exactly",
+            "activation definition must match the catalogue target exactly",
             json!({ "target_id": target_id }),
         ))
     }

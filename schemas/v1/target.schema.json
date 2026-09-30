@@ -39,8 +39,7 @@
       "additionalProperties": { "$ref": "#/$defs/NonBlankString" }
     },
     "source_notes": { "$ref": "#/$defs/NonBlankStringSet" },
-    "origin_references": { "$ref": "#/$defs/NonBlankStringSet" },
-    "replaces_target_id": { "$ref": "#/$defs/NonBlankString" }
+    "origin_references": { "$ref": "#/$defs/NonBlankStringSet" }
   },
   "$defs": {
     "NonBlankString": {

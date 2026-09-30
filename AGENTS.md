@@ -34,9 +34,8 @@ toolchain.
 - Raw review JSON rejects duplicate object names before schema validation.
 - Each scheduling fact is stored once under one closed scheduling object.
 - Active target definitions are immutable.
-- Any change to an active target creates a revision with a new ID.
-- History carryover requires an explicit one-to-one revision request and a
-  reason.
+- Any change to an active target retires it with a reason and activates a new
+  target with a new ID. History does not carry over.
 - Events are append-only at the logical level.
 - Every state-changing command uses the single lock and atomic-replacement
   path.

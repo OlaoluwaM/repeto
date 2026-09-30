@@ -80,8 +80,6 @@ pub enum TargetCommand {
     Retire(ReasonArgs),
     /// Manually flag an active target as needing study.
     FlagStudy(ReasonArgs),
-    /// Replace an active or paused target with its prepared revision.
-    Revise(ReviseArgs),
 }
 
 /// Target ID plus an optional deterministic timestamp.
@@ -100,22 +98,6 @@ pub struct ReasonArgs {
     /// Explain the requested lifecycle transition.
     #[arg(long)]
     pub reason: String,
-    /// Use this RFC 3339 UTC timestamp.
-    #[arg(long)]
-    pub at: Option<String>,
-}
-
-/// Revision inputs including the explicit history-carryover choice.
-#[derive(Debug, Args)]
-pub struct ReviseArgs {
-    pub old_id: String,
-    pub new_id: String,
-    /// Explain the requested revision.
-    #[arg(long)]
-    pub reason: String,
-    /// Carry history only for this explicit one-to-one revision.
-    #[arg(long)]
-    pub carry_history: bool,
     /// Use this RFC 3339 UTC timestamp.
     #[arg(long)]
     pub at: Option<String>,

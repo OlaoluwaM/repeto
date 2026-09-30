@@ -49,10 +49,6 @@ fn first_event(sequence: u64, target_id: &str, occurred_at: &str) -> Value {
     json!({ "sequence": sequence, "event_type": "review_completed", "target_id": target_id, "occurred_at": occurred_at })
 }
 
-fn revision_event(sequence: u64, old_id: &str, new_id: &str, carry: bool) -> Value {
-    json!({ "sequence": sequence, "event_type": "revision", "target_id": old_id, "payload": { "new_target_id": new_id, "carry_history": carry } })
-}
-
 fn future_review() -> LatestReview {
     LatestReview {
         memory_state: MemoryState {
@@ -147,27 +143,18 @@ fn successive_completed_first_slots_visit_five_eligible_groups_and_reads_do_not_
 }
 
 #[test]
-fn only_original_first_events_advance_recency_including_retired_and_carried_targets() {
+fn only_original_first_events_advance_recency_including_retired_targets() {
     let config = config(&[("a", &["A"][..]), ("b", &["B"][..]), ("c", &["C"][..])]);
     let history = [
         first_event(1, "old-a", "2026-09-20T12:00:00.000Z"),
-        revision_event(2, "old-a", "carry-a", true),
-        first_event(3, "carry-a", "2026-09-25T12:00:00.000Z"),
-        first_event(4, "old-b", "2026-09-21T12:00:00.000Z"),
-        first_event(5, "old-b", "2026-09-26T01:00:00.000Z"),
+        first_event(2, "old-b", "2026-09-21T12:00:00.000Z"),
+        first_event(3, "old-b", "2026-09-26T01:00:00.000Z"),
     ];
     let targets = [
         QueueTarget {
             id: "old-a",
             topic: "A",
             lifecycle_state: LifecycleState::Retired,
-            needs_study: false,
-            latest_review: None,
-        },
-        QueueTarget {
-            id: "carry-a",
-            topic: "B",
-            lifecycle_state: LifecycleState::Paused,
             needs_study: false,
             latest_review: None,
         },
@@ -230,7 +217,7 @@ fn only_original_first_events_advance_recency_including_retired_and_carried_targ
             .as_ref()
             .unwrap()
             .sequence,
-        4
+        2
     );
 }
 
@@ -283,13 +270,12 @@ fn tied_first_review_timestamps_use_event_sequence_before_group_id() {
 }
 
 #[test]
-fn fresh_revision_creates_a_first_review_and_due_repeats_do_not() {
+fn a_new_targets_first_review_counts_and_repeats_of_retired_targets_do_not() {
     let config = config(&[("a", &["A"][..]), ("b", &["B"][..])]);
     let history = [
         first_event(1, "old-a", "2026-09-20T12:00:00.000Z"),
-        revision_event(2, "old-a", "fresh-b", false),
-        first_event(3, "fresh-b", "2026-09-21T12:00:00.000Z"),
-        first_event(4, "old-a", "2026-09-25T12:00:00.000Z"),
+        first_event(2, "fresh-b", "2026-09-21T12:00:00.000Z"),
+        first_event(3, "old-a", "2026-09-25T12:00:00.000Z"),
     ];
     let targets = [
         QueueTarget {
@@ -334,7 +320,7 @@ fn fresh_revision_creates_a_first_review_and_due_repeats_do_not() {
             .as_ref()
             .unwrap()
             .sequence,
-        3
+        2
     );
 }
 
