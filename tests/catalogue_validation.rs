@@ -316,10 +316,22 @@ fn load_rejects_paths_outside_the_allowed_tree_shapes() {
 
     let directory = data_directory_with_targets(&[
         ("rust/rust-borrow.yaml", RUST_BORROW_YAML),
-        ("rust/.hidden", "stray"),
+        ("rust/stray.txt", "stray"),
     ]);
     let error = load_catalogue(directory.path()).unwrap_err();
     assert_eq!(error.code, "invalid_target_filename");
+}
+
+#[test]
+fn load_ignores_hidden_files_and_folders() {
+    let directory = data_directory_with_targets(&[
+        ("rust/rust-borrow.yaml", RUST_BORROW_YAML),
+        ("rust/.rust-borrow.yaml.swp", "editor swap file"),
+        (".DS_Store", "metadata"),
+        ("rust/.drafts/Not A Target.yaml", "ignored"),
+    ]);
+    let catalogue = load_catalogue(directory.path()).unwrap();
+    assert_eq!(catalogue.targets.len(), 1);
 }
 
 #[test]

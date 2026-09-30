@@ -1,6 +1,6 @@
 # ADR 0001: Use JSON Schema as the Data Contract
 
-- **Status:** Accepted
+- **Status:** Accepted (revision-graph validation removed by ADR 0010)
 - **Date:** 2026-09-02
 
 ## Context

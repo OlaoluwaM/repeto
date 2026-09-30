@@ -92,7 +92,8 @@ must have exactly the `skill.can` keys.
   whole `targets/` tree.
 - Allowed paths are `targets/<group>/<id>.yaml` and
   `targets/<group>/<subject>/<id>.yaml`. A `.yaml` file directly in `targets/`,
-  anything deeper, and any non-`.yaml` file in the tree fail validation.
+  anything deeper, and any other non-hidden, non-`.yaml` file in the tree fail
+  validation. Hidden files and folders (names starting with `.`) are ignored.
 - Folder names and IDs use lowercase words joined by single hyphens
   (`^[a-z0-9]+(?:-[a-z0-9]+)*$`).
 - The top-level folder is the rotation group. It must be a key of

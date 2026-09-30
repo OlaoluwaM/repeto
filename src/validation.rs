@@ -532,6 +532,10 @@ fn collect_target_files(
         .collect::<Result<Vec<_>, _>>()?;
     entries.sort();
     for (name, is_directory) in entries {
+        // Hidden entries, such as editor swap files, are not catalogue files.
+        if name.as_encoded_bytes().starts_with(b".") {
+            continue;
+        }
         let child = relative.join(name);
         if is_directory {
             collect_target_files(root, &child, files)?;
