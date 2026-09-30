@@ -1,6 +1,6 @@
 # ADR 0008: Rotate First Reviews From Completed History
 
-- **Status:** Accepted
+- **Status:** Accepted (topic-to-group map and carried-revision rule superseded by ADR 0009 and ADR 0010)
 - **Date:** 2026-09-26
 
 ## Context
