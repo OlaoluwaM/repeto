@@ -255,3 +255,113 @@ fn output_envelopes_keep_success_and_error_shapes_distinct() {
         json!({ "ok": false, "error": { "code": "bad_input" } })
     );
 }
+
+fn review_input_variants() -> [(&'static str, Value); 3] {
+    let independent = json_fixture(include_str!("fixtures/valid/review-record-input.json"));
+    let mut assisted = independent.clone();
+    assisted["assessment"]["target_knowledge_supplied_before_answer"] = json!(true);
+    assisted.as_object_mut().unwrap().remove("confidence");
+    let mut no_answer = independent.clone();
+    no_answer["assessment"]["answer_submitted"] = json!(false);
+    no_answer.as_object_mut().unwrap().remove("confidence");
+    no_answer["metadata"]
+        .as_object_mut()
+        .unwrap()
+        .remove("answer");
+    [
+        ("independent", independent),
+        ("assisted", assisted),
+        ("no answer", no_answer),
+    ]
+}
+
+#[test]
+fn review_input_difficulty_and_source_note_issues_are_required_on_every_variant() {
+    for (variant, valid) in review_input_variants() {
+        parse_review_record_input(&valid.to_string()).unwrap_or_else(|error| {
+            panic!("{variant} variant must be valid: {error:?}");
+        });
+        for field in ["difficulty", "source_note_issues"] {
+            let mut input = valid.clone();
+            input["metadata"].as_object_mut().unwrap().remove(field);
+            let error = parse_review_record_input(&input.to_string()).unwrap_err();
+            assert_eq!(error.code, "schema_validation_failed", "{variant} {field}");
+        }
+    }
+}
+
+#[test]
+fn review_input_difficulty_must_be_an_integer_from_one_to_five() {
+    for (variant, valid) in review_input_variants() {
+        for accepted in [json!(1), json!(2), json!(3), json!(4), json!(5)] {
+            let mut input = valid.clone();
+            input["metadata"]["difficulty"] = accepted.clone();
+            parse_review_record_input(&input.to_string())
+                .unwrap_or_else(|error| panic!("{variant} {accepted}: {error:?}"));
+        }
+        for rejected in [
+            json!(0),
+            json!(6),
+            json!(-1),
+            json!(2.5),
+            json!("3"),
+            json!(null),
+            json!(true),
+        ] {
+            let mut input = valid.clone();
+            input["metadata"]["difficulty"] = rejected.clone();
+            let error = parse_review_record_input(&input.to_string()).unwrap_err();
+            assert_eq!(
+                error.code, "schema_validation_failed",
+                "{variant} {rejected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn review_input_source_note_issues_accept_empty_and_reject_blank_or_non_strings() {
+    for (variant, valid) in review_input_variants() {
+        for accepted in [json!([]), json!(["One fix."]), json!(["One.", "One."])] {
+            let mut input = valid.clone();
+            input["metadata"]["source_note_issues"] = accepted.clone();
+            parse_review_record_input(&input.to_string())
+                .unwrap_or_else(|error| panic!("{variant} {accepted}: {error:?}"));
+        }
+        for rejected in [
+            json!([""]),
+            json!(["Real issue.", "   "]),
+            json!([1]),
+            json!("A fix."),
+            json!(null),
+        ] {
+            let mut input = valid.clone();
+            input["metadata"]["source_note_issues"] = rejected.clone();
+            let error = parse_review_record_input(&input.to_string()).unwrap_err();
+            assert_eq!(
+                error.code, "schema_validation_failed",
+                "{variant} {rejected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn stored_review_event_requires_difficulty_and_source_note_issues() {
+    let valid = json_fixture(include_str!("fixtures/valid/review-completed-event.json"));
+    for field in ["difficulty", "source_note_issues"] {
+        let mut event = valid.clone();
+        event["payload"]["metadata"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        let error = validate_document(SchemaKind::Event, &event).unwrap_err();
+        assert_eq!(error.code, "schema_validation_failed", "{field}");
+    }
+    let mut event = valid.clone();
+    event["payload"]["metadata"]["difficulty"] = json!(6);
+    assert!(validate_document(SchemaKind::Event, &event).is_err());
+    let mut event = valid;
+    event["payload"]["metadata"]["source_note_issues"] = json!([" "]);
+    assert!(validate_document(SchemaKind::Event, &event).is_err());
+}

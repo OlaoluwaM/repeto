@@ -21,7 +21,9 @@
       "grading_explanation": "The answer identified the leading key and its navigation role.",
       "verification_sources": [
         "https://www.postgresql.org/docs/current/indexes-multicolumn.html"
-      ]
+      ],
+      "difficulty": 3,
+      "source_note_issues": []
     },
     "assessment_policy_id": "repeto-analytic-conjunctive-v1",
     "result": "correct",

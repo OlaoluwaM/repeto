@@ -237,11 +237,38 @@ The review input supplies `occurred_at`, target and session IDs, assessment,
 conditional confidence, and closed metadata. It does not supply result, FSRS
 rating, scheduling output, correction, or explain-back.
 
+Every review input, whether answered independently, answered with assistance,
+or not answered, must carry these reviewer-authored fields in `metadata`
+alongside `prompt`, `answer`, `grading_explanation`, and
+`verification_sources`:
+
+- `difficulty`: an integer from 1 to 5 for the question the reviewer asked
+  (1 recall, 2 explain, 3 apply, 4 compare or diagnose, 5 design or derive).
+- `source_note_issues`: an array of nonblank strings, each one correction the
+  reviewer found is needed in the target's source notes. Use `[]` when there
+  are none.
+
+```json
+"metadata": {
+  "prompt": "What does an immutable borrow permit in Rust?",
+  "answer": "It permits reads without transferring ownership.",
+  "grading_explanation": "The answer covers the correct-answer requirement.",
+  "verification_sources": ["https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"],
+  "difficulty": 2,
+  "source_note_issues": ["The note does not say that mutable borrows are exclusive."]
+}
+```
+
+Repeto checks only that both fields are present and well formed. It does not
+judge them, and they never affect the result, FSRS rating, scheduling, or
+queue. They are stored verbatim in the `review_completed` event metadata and
+appear in `target history`.
+
 Repeto derives `correct` or `not_correct`, maps it to `Good` or `Again`, stores
 one closed scheduling object, and commits one event. `review record` has no
 `--at` option or clock fallback.
 
-An exact retry returns the existing event. Changed input under the same
+An exact retry (metadata included) returns the existing event. Changed input under the same
 `session_id + target_id` returns `conflicting_review_retry`.
 
 `target flag-study` sets `needs_study` on an active target explicitly, without

@@ -17,6 +17,10 @@
     "grading_explanation": "The answer covers the correct-answer requirement.",
     "verification_sources": [
       "https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"
+    ],
+    "difficulty": 2,
+    "source_note_issues": [
+      "The note does not say that mutable borrows are exclusive."
     ]
   }
 }

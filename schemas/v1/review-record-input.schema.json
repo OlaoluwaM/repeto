@@ -116,12 +116,14 @@
       "title": "ReviewInputMetadata",
       "type": "object",
       "additionalProperties": false,
-      "required": ["prompt", "grading_explanation", "verification_sources"],
+      "required": ["prompt", "grading_explanation", "verification_sources", "difficulty", "source_note_issues"],
       "properties": {
         "prompt": { "$ref": "#/$defs/NonBlankString" },
         "answer": { "$ref": "#/$defs/NonBlankString" },
         "grading_explanation": { "$ref": "#/$defs/NonBlankString" },
-        "verification_sources": { "$ref": "#/$defs/NonBlankStringSet" }
+        "verification_sources": { "$ref": "#/$defs/NonBlankStringSet" },
+        "difficulty": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "source_note_issues": { "type": "array", "items": { "$ref": "#/$defs/NonBlankString" } }
       }
     },
     "ReviewInputMetadataWithAnswer": {

@@ -4,6 +4,7 @@ use repeto::{events::replay, validation::load_catalogue};
 use serde_json::{Value, json};
 
 type EventMutation = (fn(&mut Value), &'static str);
+type InputMutation = (&'static str, fn(&mut Value));
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_repeto")
@@ -56,7 +57,7 @@ fn setup() -> tempfile::TempDir {
     data
 }
 fn review(answer: bool, session: &str, occurred_at: &str) -> Value {
-    json!({"schema_version":1,"target_id":"target","session_id":session,"occurred_at":occurred_at,"assessment":{"answer_submitted":true,"target_knowledge_supplied_before_answer":false,"requirement_checks":{"rule":answer}},"confidence":"sure","metadata":{"prompt":"What is ownership?","answer":"A rule.","grading_explanation":"Graded.","verification_sources":["source-b","source-a"]}})
+    json!({"schema_version":1,"target_id":"target","session_id":session,"occurred_at":occurred_at,"assessment":{"answer_submitted":true,"target_knowledge_supplied_before_answer":false,"requirement_checks":{"rule":answer}},"confidence":"sure","metadata":{"prompt":"What is ownership?","answer":"A rule.","grading_explanation":"Graded.","verification_sources":["source-b","source-a"],"difficulty":3,"source_note_issues":["Note omits the move rule."]}})
 }
 fn activate(data: &Path) {
     assert_ok(
@@ -237,11 +238,13 @@ fn unordered_target_sets_survive_activation_retirement_reload_and_unrelated_writ
 
 #[test]
 fn changed_review_identity_input_conflicts_and_no_answer_violations_use_schema_error() {
-    let changes: [fn(&mut Value); 4] = [
+    let changes: [fn(&mut Value); 6] = [
         |value: &mut Value| value["occurred_at"] = json!("2026-09-03T12:00:00.000Z"),
         |value: &mut Value| value["assessment"]["requirement_checks"]["rule"] = json!(false),
         |value: &mut Value| value["confidence"] = json!("guessing"),
         |value: &mut Value| value["metadata"]["answer"] = json!("Different answer."),
+        |value: &mut Value| value["metadata"]["difficulty"] = json!(4),
+        |value: &mut Value| value["metadata"]["source_note_issues"] = json!([]),
     ];
     for changed in changes {
         let data = setup();
@@ -1435,4 +1438,114 @@ fn review_requirement_checks_must_equal_the_target_can_keys() {
     );
     let recorded = assert_ok(data.path(), &["review", "record", "--input", &path]);
     assert_eq!(recorded["disposition"], "committed");
+}
+
+#[test]
+fn difficulty_and_source_note_issues_are_stored_and_shown_in_history() {
+    let data = setup();
+    activate(data.path());
+    let with_issue = review(true, "with-issue", "2026-09-02T12:00:00.000Z");
+    let path = write_review(data.path(), &with_issue);
+    let recorded = assert_ok(data.path(), &["review", "record", "--input", &path]);
+    assert_eq!(recorded["event"]["payload"]["metadata"]["difficulty"], 3);
+    assert_eq!(
+        recorded["event"]["payload"]["metadata"]["source_note_issues"],
+        json!(["Note omits the move rule."])
+    );
+
+    let mut without_issues = review(true, "no-issues", "2026-09-03T12:00:00.000Z");
+    without_issues["metadata"]["difficulty"] = json!(5);
+    without_issues["metadata"]["source_note_issues"] = json!([]);
+    let path = write_review(data.path(), &without_issues);
+    assert_ok(data.path(), &["review", "record", "--input", &path]);
+
+    let history = assert_ok(data.path(), &["target", "history", "target"]);
+    let metadata: Vec<&Value> = history["reviews"]
+        .as_array()
+        .expect("reviews")
+        .iter()
+        .map(|review| &review["payload"]["metadata"])
+        .collect();
+    assert_eq!(metadata.len(), 2);
+    assert_eq!(metadata[0]["difficulty"], 3);
+    assert_eq!(
+        metadata[0]["source_note_issues"],
+        json!(["Note omits the move rule."])
+    );
+    assert_eq!(metadata[1]["difficulty"], 5);
+    assert_eq!(metadata[1]["source_note_issues"], json!([]));
+}
+
+#[test]
+fn difficulty_and_source_note_issues_do_not_change_result_or_scheduling() {
+    let record = |difficulty: u64, issues: Value| {
+        let data = setup();
+        activate(data.path());
+        let mut input = review(true, "session", "2026-09-02T12:00:00.000Z");
+        input["metadata"]["difficulty"] = json!(difficulty);
+        input["metadata"]["source_note_issues"] = issues;
+        let path = write_review(data.path(), &input);
+        let recorded = assert_ok(data.path(), &["review", "record", "--input", &path]);
+        let payload = &recorded["event"]["payload"];
+        let queue = assert_ok(data.path(), &["queue", "--at", "2026-09-06T12:00:00.000Z"]);
+        (
+            payload["result"].clone(),
+            payload["scheduling"].clone(),
+            queue,
+        )
+    };
+    let easy = record(1, json!([]));
+    let hard = record(5, json!(["One.", "Two."]));
+    assert_eq!(easy.0, hard.0);
+    assert_eq!(easy.1, hard.1);
+    assert_eq!(easy.2, hard.2);
+}
+
+#[test]
+fn review_input_requires_valid_difficulty_and_source_note_issues() {
+    let data = setup();
+    activate(data.path());
+    let mutations: [InputMutation; 7] = [
+        ("missing difficulty", |value| {
+            value["metadata"]
+                .as_object_mut()
+                .expect("metadata")
+                .remove("difficulty");
+        }),
+        ("difficulty 0", |value| {
+            value["metadata"]["difficulty"] = json!(0);
+        }),
+        ("difficulty 6", |value| {
+            value["metadata"]["difficulty"] = json!(6);
+        }),
+        ("difficulty 2.5", |value| {
+            value["metadata"]["difficulty"] = json!(2.5);
+        }),
+        ("difficulty string", |value| {
+            value["metadata"]["difficulty"] = json!("3");
+        }),
+        ("missing source_note_issues", |value| {
+            value["metadata"]
+                .as_object_mut()
+                .expect("metadata")
+                .remove("source_note_issues");
+        }),
+        ("blank issue", |value| {
+            value["metadata"]["source_note_issues"] = json!(["Real issue.", "  "]);
+        }),
+    ];
+    for (name, mutate) in mutations {
+        let mut input = review(true, "session", "2026-09-02T12:00:00.000Z");
+        mutate(&mut input);
+        let path = write_review(data.path(), &input);
+        let (success, value) = command(data.path(), &["review", "record", "--input", &path]);
+        assert!(!success, "{name} must be rejected: {value}");
+        assert_eq!(value["error"]["code"], "schema_validation_failed", "{name}");
+    }
+    let events = fs::read_to_string(data.path().join("events.jsonl")).expect("events");
+    assert_eq!(
+        events.lines().count(),
+        1,
+        "only the activation event exists"
+    );
 }

@@ -195,7 +195,9 @@ fn review_event(sequence: u64, target_id: &str, session_id: &str) -> Value {
                 "prompt": "What does an immutable borrow permit in Rust?",
                 "answer": "It permits reads without transferring ownership.",
                 "grading_explanation": "Complete.",
-                "verification_sources": ["https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"]
+                "verification_sources": ["https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"],
+                "difficulty": 2,
+                "source_note_issues": []
             },
             "assessment_policy_id": "repeto-analytic-conjunctive-v1",
             "result": "correct",
