@@ -19,7 +19,7 @@ fn json_fixture(contents: &str) -> Value {
 #[test]
 fn valid_fixtures_validate_and_deserialize_into_generated_types() {
     let configuration = yaml_fixture(include_str!("fixtures/valid/config.yaml"));
-    let target = yaml_fixture(include_str!("fixtures/valid/targets/rust-borrow.yaml"));
+    let target = yaml_fixture(include_str!("fixtures/valid/targets/rust/rust-borrow.yaml"));
     let event = json_fixture(include_str!("fixtures/valid/event.json"));
     let completed_review_event =
         json_fixture(include_str!("fixtures/valid/review-completed-event.json"));
@@ -33,17 +33,40 @@ fn valid_fixtures_validate_and_deserialize_into_generated_types() {
 }
 
 #[test]
-fn closed_enums_are_rejected_by_the_canonical_schema() {
-    let target = yaml_fixture(include_str!("fixtures/invalid/target-unknown-demand.yaml"));
+fn target_schema_is_closed_and_rejects_removed_fields() {
+    let valid = yaml_fixture(include_str!("fixtures/valid/targets/rust/rust-borrow.yaml"));
+    for (field, value) in [
+        ("schema_version", json!(1)),
+        ("id", json!("rust-borrow")),
+        ("scope", json!("Ownership")),
+        (
+            "retrieval_demand",
+            json!({"kind": "explain", "description": "Explain."}),
+        ),
+        ("canonical_question", json!("What?")),
+        ("correct_answer_requirements", json!({"rule": "A rule."})),
+        ("origin_references", json!(["https://example.com"])),
+        ("unknown", json!("value")),
+    ] {
+        let mut target = valid.clone();
+        target[field] = value;
+        let error = validate_document(SchemaKind::Target, &target).unwrap_err();
+        assert_eq!(error.code, "schema_validation_failed", "field {field}");
+    }
 
+    let mut target = valid.clone();
+    target["skill"]["extra"] = json!("value");
     let error = validate_document(SchemaKind::Target, &target).unwrap_err();
+    assert_eq!(error.code, "schema_validation_failed");
 
+    let target = yaml_fixture(include_str!("fixtures/invalid/target-empty-can.yaml"));
+    let error = validate_document(SchemaKind::Target, &target).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 }
 
 #[test]
-fn source_notes_must_be_nonempty_and_remain_distinct_from_origin_references() {
-    let mut target = yaml_fixture(include_str!("fixtures/valid/targets/rust-borrow.yaml"));
+fn source_notes_must_be_nonempty_and_present() {
+    let mut target = yaml_fixture(include_str!("fixtures/valid/targets/rust/rust-borrow.yaml"));
     target["source_notes"] = json!([]);
     let error = validate_document(SchemaKind::Target, &target).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
@@ -55,21 +78,37 @@ fn source_notes_must_be_nonempty_and_remain_distinct_from_origin_references() {
 }
 
 #[test]
-fn target_requirements_must_be_nonempty_and_use_stable_ids() {
-    let mut target = yaml_fixture(include_str!("fixtures/valid/targets/rust-borrow.yaml"));
-    target["correct_answer_requirements"] = json!({});
+fn skill_can_must_be_nonempty_and_use_stable_keys() {
+    let mut target = yaml_fixture(include_str!("fixtures/valid/targets/rust/rust-borrow.yaml"));
+    target["skill"]["can"] = json!({});
     let error = validate_document(SchemaKind::Target, &target).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 
-    target["correct_answer_requirements"] = json!({ "Read_Access": "Valid text." });
+    for key in [
+        "Read_Access",
+        "read access",
+        "-read",
+        "read-",
+        "read--access",
+        "1read",
+    ] {
+        target["skill"]["can"] = json!({ key: "Valid text." });
+        let error = validate_document(SchemaKind::Target, &target).unwrap_err();
+        assert_eq!(error.code, "schema_validation_failed", "key {key}");
+    }
+
+    target["skill"]["can"] = json!({ "read-access": "   " });
     let error = validate_document(SchemaKind::Target, &target).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
+
+    target["skill"]["can"] = json!({ "read-access": "Valid text.", "step2-check": "Valid text." });
+    validate_document(SchemaKind::Target, &target).unwrap();
 }
 
 #[test]
 fn schema_owned_text_rejects_whitespace_only_values() {
-    let mut target = yaml_fixture(include_str!("fixtures/valid/targets/rust-borrow.yaml"));
-    target["topic"] = json!(" \t\n");
+    let mut target = yaml_fixture(include_str!("fixtures/valid/targets/rust/rust-borrow.yaml"));
+    target["skill"]["objective"] = json!(" \t\n");
     let error = validate_document(SchemaKind::Target, &target).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 
@@ -80,21 +119,13 @@ fn schema_owned_text_rejects_whitespace_only_values() {
 }
 
 #[test]
-fn target_set_fields_must_be_unique_and_nonempty_when_present() {
-    let mut target = yaml_fixture(include_str!("fixtures/valid/targets/rust-borrow.yaml"));
+fn source_notes_must_be_unique_and_nonblank() {
+    let mut target = yaml_fixture(include_str!("fixtures/valid/targets/rust/rust-borrow.yaml"));
     target["source_notes"] = json!(["Cards/Rust Borrowing.md", "Cards/Rust Borrowing.md"]);
     let error = validate_document(SchemaKind::Target, &target).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 
-    target["source_notes"] = json!(["Cards/Rust Borrowing.md"]);
-    target["origin_references"] = json!([
-        "https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html",
-        "https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"
-    ]);
-    let error = validate_document(SchemaKind::Target, &target).unwrap_err();
-    assert_eq!(error.code, "schema_validation_failed");
-
-    target["origin_references"] = json!([]);
+    target["source_notes"] = json!(["Cards/Rust Borrowing.md", " "]);
     let error = validate_document(SchemaKind::Target, &target).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 }

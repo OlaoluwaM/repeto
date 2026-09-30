@@ -3,22 +3,28 @@ use std::{fs, path::PathBuf};
 use repeto::validation::{TargetFile, load_catalogue, parse_json, parse_yaml, validate_catalogue};
 use serde_json::{Value, json};
 
+const RUST_BORROW_YAML: &str = include_str!("fixtures/valid/targets/rust/rust-borrow.yaml");
+
 fn configuration() -> Value {
     parse_yaml(include_str!("fixtures/valid/config.yaml")).unwrap()
 }
 
 fn target() -> Value {
-    parse_yaml(include_str!("fixtures/valid/targets/rust-borrow.yaml")).unwrap()
+    parse_yaml(RUST_BORROW_YAML).unwrap()
 }
 
 fn activation_event() -> Value {
     parse_json(include_str!("fixtures/valid/event.json")).unwrap()
 }
 
-fn target_file(document: Value) -> TargetFile {
-    let id = document["id"].as_str().unwrap();
+/// The valid fixture target at its canonical path, `rust/rust-borrow.yaml`.
+fn fixture_target_file() -> TargetFile {
+    target_file("rust/rust-borrow.yaml", target())
+}
+
+fn target_file(path: &str, document: Value) -> TargetFile {
     TargetFile {
-        path: PathBuf::from(format!("{id}.yaml")),
+        path: PathBuf::from(path),
         document,
     }
 }
@@ -26,13 +32,11 @@ fn target_file(document: Value) -> TargetFile {
 fn policy_four_configuration() -> Value {
     let mut value = configuration();
     value["queue_priority_policy_version"] = json!(4);
-    value["rotation_groups"] =
-        json!({ "rust": { "label": "Rust", "description": "Rust studies", "topics": ["Rust"] } });
     value
 }
 
 #[test]
-fn policy_four_requires_nonempty_nonoverlapping_closed_rotation_groups() {
+fn policy_four_requires_nonempty_closed_rotation_groups() {
     let mut config = policy_four_configuration();
     config.as_object_mut().unwrap().remove("rotation_groups");
     assert_eq!(
@@ -44,17 +48,11 @@ fn policy_four_requires_nonempty_nonoverlapping_closed_rotation_groups() {
         validate_catalogue(&config, &[], &[]).unwrap_err().code,
         "invalid_rotation_configuration"
     );
-    config["rotation_groups"] = json!({ "rust": { "label": "Rust", "description": "Rust studies", "topics": ["Rust"] }, "also-rust": { "label": "Also Rust", "description": "Overlap", "topics": ["Rust"] } });
-    assert_eq!(
-        validate_catalogue(&config, &[], &[]).unwrap_err().code,
-        "duplicate_rotation_topic"
-    );
     for groups in [
-        json!({ "Bad_ID": { "label": "Rust", "description": "Studies", "topics": ["Rust"] } }),
-        json!({ "rust": { "label": " ", "description": "Studies", "topics": ["Rust"] } }),
-        json!({ "rust": { "label": "Rust", "description": "Studies", "topics": ["Rust", "Rust"] } }),
-        json!({ "rust": { "label": "Rust", "description": "Studies", "topics": [] } }),
-        json!({ "rust": { "label": "Rust", "description": "Studies", "topics": ["Rust"], "extra": true } }),
+        json!({ "Bad_ID": { "label": "Rust", "description": "Studies" } }),
+        json!({ "rust": { "label": " ", "description": "Studies" } }),
+        json!({ "rust": { "label": "Rust" } }),
+        json!({ "rust": { "label": "Rust", "description": "Studies", "extra": true } }),
     ] {
         config["rotation_groups"] = groups;
         assert_eq!(
@@ -64,8 +62,8 @@ fn policy_four_requires_nonempty_nonoverlapping_closed_rotation_groups() {
     }
     assert!(
         validate_catalogue(
-            &configuration(),
-            &[target_file(target())],
+            &policy_four_configuration(),
+            &[fixture_target_file()],
             &[activation_event()]
         )
         .is_ok()
@@ -75,7 +73,7 @@ fn policy_four_requires_nonempty_nonoverlapping_closed_rotation_groups() {
 #[test]
 fn rotation_group_ids_match_the_grouping_checker_boundary_without_capping_group_count() {
     let mut config = policy_four_configuration();
-    let group = json!({ "label": "Rust", "description": "Rust studies", "topics": ["Rust"] });
+    let group = json!({ "label": "Rust", "description": "Rust studies" });
     for id in [
         "ambiguous".to_owned(),
         "no-suitable-group".to_owned(),
@@ -95,7 +93,7 @@ fn rotation_group_ids_match_the_grouping_checker_boundary_without_capping_group_
         .map(|index| {
             (
                 format!("group-{index}"),
-                json!({ "label": "Group", "description": "Group studies", "topics": [format!("Topic {index}")] }),
+                json!({ "label": "Group", "description": "Group studies" }),
             )
         })
         .collect::<serde_json::Map<_, _>>();
@@ -106,34 +104,76 @@ fn rotation_group_ids_match_the_grouping_checker_boundary_without_capping_group_
 }
 
 #[test]
-fn policy_four_rejects_unmapped_activation_and_resume() {
-    let mut config = policy_four_configuration();
-    config["rotation_groups"]["rust"]["topics"] = json!(["Other"]);
-    assert_eq!(
-        validate_catalogue(&config, &[target_file(target())], &[activation_event()])
-            .unwrap_err()
-            .code,
-        "unmapped_active_topic"
-    );
+fn top_level_folder_must_be_a_configured_rotation_group() {
+    for policy in [1, 4] {
+        let mut config = configuration();
+        config["queue_priority_policy_version"] = json!(policy);
+        config["rotation_groups"] =
+            json!({ "other": { "label": "Other", "description": "Other." } });
+        let error = validate_catalogue(&config, &[fixture_target_file()], &[]).unwrap_err();
+        assert_eq!(error.code, "unknown_rotation_group");
+        assert_eq!(error.details["folder"], "rust");
+    }
 
-    let original = target();
-    let files = [target_file(original.clone())];
-    let pause = json!({"schema_version":1,"sequence":2,"event_type":"pause","occurred_at":"2026-09-02T12:00:00.000Z","target_id":original["id"],"payload":{"reason":"Pause"}});
-    let resume = json!({"schema_version":1,"sequence":3,"event_type":"resume","occurred_at":"2026-09-02T12:00:00.000Z","target_id":original["id"],"payload":{"reason":"Resume"}});
-    let mut unmapped_past = policy_four_configuration();
-    unmapped_past["rotation_groups"]["rust"]["topics"] = json!(["Unmapped"]);
-    validate_catalogue(&unmapped_past, &files, &[activation_event(), pause.clone()])
-        .expect("historically active but currently paused topic may be unmapped");
-    assert_eq!(
-        validate_catalogue(&unmapped_past, &files, &[activation_event(), pause, resume])
-            .unwrap_err()
-            .code,
-        "unmapped_active_topic"
-    );
+    let mut without_groups = configuration();
+    without_groups
+        .as_object_mut()
+        .unwrap()
+        .remove("rotation_groups");
+    let error = validate_catalogue(&without_groups, &[fixture_target_file()], &[]).unwrap_err();
+    assert_eq!(error.code, "unknown_rotation_group");
 
-    let retirement = json!({"schema_version":1,"sequence":2,"event_type":"retirement","occurred_at":"2026-09-02T12:00:00.000Z","target_id":original["id"],"payload":{"reason":"Retire"}});
-    validate_catalogue(&unmapped_past, &files, &[activation_event(), retirement])
-        .expect("retired target topic may be unmapped");
+    // Only the top-level folder is checked against configuration.
+    validate_catalogue(
+        &configuration(),
+        &[target_file("rust/any-subject/rust-borrow.yaml", target())],
+        &[],
+    )
+    .expect("subject folders need no configuration");
+}
+
+#[test]
+fn target_paths_must_be_group_id_or_group_subject_id_yaml() {
+    for (path, code) in [
+        ("rust-borrow.yaml", "target_outside_group_folder"),
+        ("rust/a/b/rust-borrow.yaml", "target_path_too_deep"),
+        ("rust/a/b/c/d/rust-borrow.yaml", "target_path_too_deep"),
+        ("rust/rust-borrow.yml", "invalid_target_filename"),
+        ("rust/README.md", "invalid_target_filename"),
+        ("rust/rust-borrow", "invalid_target_filename"),
+        ("Rust/rust-borrow.yaml", "invalid_target_folder_name"),
+        (
+            "rust/Sub Folder/rust-borrow.yaml",
+            "invalid_target_folder_name",
+        ),
+        ("rust/-sub/rust-borrow.yaml", "invalid_target_folder_name"),
+        (
+            "rust/sub--folder/rust-borrow.yaml",
+            "invalid_target_folder_name",
+        ),
+        (
+            "rust/sub_folder/rust-borrow.yaml",
+            "invalid_target_folder_name",
+        ),
+        ("rust/Rust-Borrow.yaml", "invalid_target_id"),
+        ("rust/rust.borrow.yaml", "invalid_target_id"),
+        ("rust/rust_borrow.yaml", "invalid_target_id"),
+        ("rust/-rust-borrow.yaml", "invalid_target_id"),
+        ("rust/rust-borrow-.yaml", "invalid_target_id"),
+        ("rust/.yaml", "invalid_target_id"),
+    ] {
+        let error =
+            validate_catalogue(&configuration(), &[target_file(path, target())], &[]).unwrap_err();
+        assert_eq!(error.code, code, "path {path}");
+    }
+    for path in [
+        "rust/rust-borrow.yaml",
+        "rust/sub/rust-borrow.yaml",
+        "rust/2nd-sub/9-lives.yaml",
+    ] {
+        validate_catalogue(&configuration(), &[target_file(path, target())], &[])
+            .unwrap_or_else(|error| panic!("{path} should be valid: {error}"));
+    }
 }
 
 fn review_event(sequence: u64, target_id: &str, session_id: &str) -> Value {
@@ -187,7 +227,7 @@ fn review_event(sequence: u64, target_id: &str, session_id: &str) -> Value {
 fn valid_catalogue_with_activation_passes() {
     validate_catalogue(
         &configuration(),
-        &[target_file(target())],
+        &[fixture_target_file()],
         &[activation_event()],
     )
     .unwrap();
@@ -197,15 +237,13 @@ fn valid_catalogue_with_activation_passes() {
 fn target_snapshot_comparison_treats_schema_sets_as_unordered() {
     let mut catalogue_target = target();
     catalogue_target["source_notes"] = json!(["Cards/z.md", "Cards/a.md"]);
-    catalogue_target["origin_references"] = json!(["z", "a"]);
     let mut activation = activation_event();
     activation["payload"]["definition"] = catalogue_target.clone();
     activation["payload"]["definition"]["source_notes"] = json!(["Cards/a.md", "Cards/z.md"]);
-    activation["payload"]["definition"]["origin_references"] = json!(["a", "z"]);
 
     validate_catalogue(
         &configuration(),
-        &[target_file(catalogue_target)],
+        &[target_file("rust/rust-borrow.yaml", catalogue_target)],
         &[activation],
     )
     .expect("set order does not change an immutable target definition");
@@ -221,9 +259,10 @@ fn loads_yaml_and_jsonl_catalogue_from_deterministic_paths() {
         include_str!("fixtures/valid/config.yaml"),
     )
     .unwrap();
+    fs::create_dir(data_directory.join("targets/rust")).unwrap();
     fs::write(
-        data_directory.join("targets/rust-borrow.yaml"),
-        include_str!("fixtures/valid/targets/rust-borrow.yaml"),
+        data_directory.join("targets/rust/rust-borrow.yaml"),
+        RUST_BORROW_YAML,
     )
     .unwrap();
     fs::write(
@@ -235,19 +274,78 @@ fn loads_yaml_and_jsonl_catalogue_from_deterministic_paths() {
     let catalogue = load_catalogue(data_directory).unwrap();
 
     assert_eq!(catalogue.targets.len(), 1);
+    assert!(catalogue.targets.contains_key("rust-borrow"));
+    assert_eq!(catalogue.target_groups["rust-borrow"], "rust");
     assert_eq!(catalogue.events.len(), 1);
 }
 
+fn data_directory_with_targets(files: &[(&str, &str)]) -> tempfile::TempDir {
+    let temporary_directory = tempfile::tempdir().unwrap();
+    let data_directory = temporary_directory.path();
+    fs::create_dir(data_directory.join("targets")).unwrap();
+    fs::write(
+        data_directory.join("config.yaml"),
+        include_str!("fixtures/valid/config.yaml"),
+    )
+    .unwrap();
+    fs::write(data_directory.join("events.jsonl"), "").unwrap();
+    for (path, contents) in files {
+        let path = data_directory.join("targets").join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    }
+    temporary_directory
+}
+
 #[test]
-fn rejects_filename_id_mismatch() {
-    let target_file = TargetFile {
-        path: PathBuf::from("different.yaml"),
-        document: target(),
-    };
+fn load_rejects_paths_outside_the_allowed_tree_shapes() {
+    for (path, code) in [
+        ("rust-borrow.yaml", "target_outside_group_folder"),
+        ("rust/a/b/rust-borrow.yaml", "target_path_too_deep"),
+        ("rust/rust-borrow.yml", "invalid_target_filename"),
+        ("rust/notes.md", "invalid_target_filename"),
+        ("Rust/rust-borrow.yaml", "invalid_target_folder_name"),
+        ("rust/Rust_Borrow.yaml", "invalid_target_id"),
+    ] {
+        let directory = data_directory_with_targets(&[(path, RUST_BORROW_YAML)]);
+        let error = load_catalogue(directory.path()).unwrap_err();
+        assert_eq!(error.code, code, "path {path}");
+    }
 
-    let error = validate_catalogue(&configuration(), &[target_file], &[]).unwrap_err();
+    let directory = data_directory_with_targets(&[
+        ("rust/rust-borrow.yaml", RUST_BORROW_YAML),
+        ("rust/.hidden", "stray"),
+    ]);
+    let error = load_catalogue(directory.path()).unwrap_err();
+    assert_eq!(error.code, "invalid_target_filename");
+}
 
-    assert_eq!(error.code, "target_filename_id_mismatch");
+#[test]
+fn load_rejects_a_top_level_folder_missing_from_configuration() {
+    let directory = data_directory_with_targets(&[("python/rust-borrow.yaml", RUST_BORROW_YAML)]);
+    let error = load_catalogue(directory.path()).unwrap_err();
+    assert_eq!(error.code, "unknown_rotation_group");
+}
+
+#[test]
+fn load_rejects_the_same_id_in_two_folders() {
+    let directory = data_directory_with_targets(&[
+        ("rust/rust-borrow.yaml", RUST_BORROW_YAML),
+        ("rust/ownership/rust-borrow.yaml", RUST_BORROW_YAML),
+    ]);
+    let error = load_catalogue(directory.path()).unwrap_err();
+    assert_eq!(error.code, "duplicate_target_id");
+}
+
+#[test]
+fn load_reads_nested_subject_folders_and_records_each_target_group() {
+    let directory = data_directory_with_targets(&[
+        ("rust/rust-borrow.yaml", RUST_BORROW_YAML),
+        ("rust/ownership/rust-move.yaml", RUST_BORROW_YAML),
+    ]);
+    let catalogue = load_catalogue(directory.path()).unwrap();
+    assert_eq!(catalogue.target_groups["rust-borrow"], "rust");
+    assert_eq!(catalogue.target_groups["rust-move"], "rust/ownership");
 }
 
 #[test]
@@ -258,8 +356,12 @@ fn rejects_catalogue_targets_without_the_required_source_notes_field() {
         .unwrap()
         .remove("source_notes");
 
-    let error = validate_catalogue(&configuration(), &[target_file(missing_source_notes)], &[])
-        .unwrap_err();
+    let error = validate_catalogue(
+        &configuration(),
+        &[target_file("rust/rust-borrow.yaml", missing_source_notes)],
+        &[],
+    )
+    .unwrap_err();
 
     assert_eq!(error.code, "schema_validation_failed");
 }
@@ -268,8 +370,12 @@ fn rejects_catalogue_targets_without_the_required_source_notes_field() {
 fn structural_validation_rejects_malformed_source_paths_without_reading_files() {
     let mut malformed = target();
     malformed["source_notes"] = json!(["../Cards/note.md"]);
-    let error = validate_catalogue(&configuration(), &[target_file(malformed)], &[])
-        .expect_err("malformed historical paths remain invalid");
+    let error = validate_catalogue(
+        &configuration(),
+        &[target_file("rust/rust-borrow.yaml", malformed)],
+        &[],
+    )
+    .expect_err("malformed historical paths remain invalid");
 
     assert_eq!(error.code, "invalid_source_note_path");
     assert_eq!(
@@ -279,11 +385,13 @@ fn structural_validation_rejects_malformed_source_paths_without_reading_files() 
 }
 
 #[test]
-fn rejects_duplicate_ids() {
-    let duplicate = target();
+fn rejects_duplicate_ids_across_folders() {
     let error = validate_catalogue(
         &configuration(),
-        &[target_file(target()), target_file(duplicate)],
+        &[
+            target_file("rust/rust-borrow.yaml", target()),
+            target_file("rust/ownership/rust-borrow.yaml", target()),
+        ],
         &[],
     )
     .unwrap_err();
@@ -294,7 +402,7 @@ fn rejects_duplicate_ids() {
 fn rejects_noncontinuous_sequences_unknown_targets_and_illegal_lifecycle_events() {
     let mut discontinuous = activation_event();
     discontinuous["sequence"] = json!(2);
-    let error = validate_catalogue(&configuration(), &[target_file(target())], &[discontinuous])
+    let error = validate_catalogue(&configuration(), &[fixture_target_file()], &[discontinuous])
         .unwrap_err();
     assert_eq!(error.code, "event_sequence_discontinuous");
 
@@ -302,7 +410,7 @@ fn rejects_noncontinuous_sequences_unknown_targets_and_illegal_lifecycle_events(
     unknown_target["target_id"] = json!("not-in-catalogue");
     let error = validate_catalogue(
         &configuration(),
-        &[target_file(target())],
+        &[fixture_target_file()],
         &[unknown_target],
     )
     .unwrap_err();
@@ -313,7 +421,7 @@ fn rejects_noncontinuous_sequences_unknown_targets_and_illegal_lifecycle_events(
     pause_before_activation["payload"] = json!({ "reason": "Not ready" });
     let error = validate_catalogue(
         &configuration(),
-        &[target_file(target())],
+        &[fixture_target_file()],
         &[pause_before_activation],
     )
     .unwrap_err();
@@ -359,7 +467,7 @@ fn rejects_removed_review_result_rating_and_repair_fields() {
     });
     let error = validate_catalogue(
         &configuration(),
-        &[target_file(target())],
+        &[fixture_target_file()],
         &[activation_event(), review.clone()],
     )
     .unwrap_err();
@@ -372,7 +480,7 @@ fn rejects_payloads_that_do_not_belong_to_their_event_type() {
     event["payload"] = json!({ "reason": "This is not activation data." });
 
     let error =
-        validate_catalogue(&configuration(), &[target_file(target())], &[event]).unwrap_err();
+        validate_catalogue(&configuration(), &[fixture_target_file()], &[event]).unwrap_err();
 
     assert_eq!(error.code, "event_payload_mismatch");
 }
@@ -380,12 +488,38 @@ fn rejects_payloads_that_do_not_belong_to_their_event_type() {
 #[test]
 fn rejects_an_activation_snapshot_that_differs_from_the_target_file() {
     let mut event = activation_event();
-    event["payload"]["definition"]["topic"] = json!("Different topic");
+    event["payload"]["definition"]["skill"]["objective"] = json!("A different objective");
 
     let error =
-        validate_catalogue(&configuration(), &[target_file(target())], &[event]).unwrap_err();
+        validate_catalogue(&configuration(), &[fixture_target_file()], &[event]).unwrap_err();
 
     assert_eq!(error.code, "immutable_target_mismatch");
+}
+
+#[test]
+fn moving_an_activated_target_file_keeps_its_history_valid_and_renaming_it_does_not() {
+    let events = [
+        activation_event(),
+        review_event(2, "rust-borrow", "session-1"),
+    ];
+    let mut config = configuration();
+    config["rotation_groups"]["systems"] = json!({ "label": "Systems", "description": "Systems." });
+    for moved in [
+        "systems/rust-borrow.yaml",
+        "rust/ownership/rust-borrow.yaml",
+        "systems/memory/rust-borrow.yaml",
+    ] {
+        validate_catalogue(&config, &[target_file(moved, target())], &events)
+            .unwrap_or_else(|error| panic!("moving to {moved} should keep history: {error}"));
+    }
+
+    let error = validate_catalogue(
+        &config,
+        &[target_file("rust/rust-borrows.yaml", target())],
+        &events,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "unknown_target_reference");
 }
 
 #[test]
@@ -397,7 +531,7 @@ fn rejects_duplicate_reviews_for_one_target_and_session() {
     ];
 
     let error =
-        validate_catalogue(&configuration(), &[target_file(target())], &events).unwrap_err();
+        validate_catalogue(&configuration(), &[fixture_target_file()], &events).unwrap_err();
 
     assert_eq!(error.code, "duplicate_effective_review_session");
 }
@@ -413,10 +547,10 @@ fn lifecycle_event(sequence: u64, event_type: &str, target_id: &str) -> Value {
     })
 }
 
-fn successor_activation(sequence: u64, successor: &Value) -> Value {
+fn successor_activation(sequence: u64, id: &str, successor: &Value) -> Value {
     let mut activation = activation_event();
     activation["sequence"] = json!(sequence);
-    activation["target_id"] = successor["id"].clone();
+    activation["target_id"] = json!(id);
     activation["payload"] = json!({ "definition": successor });
     activation
 }
@@ -425,14 +559,17 @@ fn successor_activation(sequence: u64, successor: &Value) -> Value {
 fn retiring_an_active_or_paused_target_lets_a_new_target_activate_and_be_reviewed() {
     let old_target = target();
     let mut successor = target();
-    successor["id"] = json!("rust-borrow.r2");
-    let files = [target_file(old_target), target_file(successor.clone())];
+    successor["skill"]["objective"] = json!("Explain immutable borrows more precisely");
+    let files = [
+        target_file("rust/rust-borrow.yaml", old_target),
+        target_file("rust/rust-borrow-r2.yaml", successor.clone()),
+    ];
 
     let from_active = [
         activation_event(),
         lifecycle_event(2, "retirement", "rust-borrow"),
-        successor_activation(3, &successor),
-        review_event(4, "rust-borrow.r2", "session-2"),
+        successor_activation(3, "rust-borrow-r2", &successor),
+        review_event(4, "rust-borrow-r2", "session-2"),
     ];
     validate_catalogue(&configuration(), &files, &from_active).unwrap();
 
@@ -440,8 +577,8 @@ fn retiring_an_active_or_paused_target_lets_a_new_target_activate_and_be_reviewe
         activation_event(),
         lifecycle_event(2, "pause", "rust-borrow"),
         lifecycle_event(3, "retirement", "rust-borrow"),
-        successor_activation(4, &successor),
-        review_event(5, "rust-borrow.r2", "session-3"),
+        successor_activation(4, "rust-borrow-r2", &successor),
+        review_event(5, "rust-borrow-r2", "session-3"),
     ];
     validate_catalogue(&configuration(), &files, &from_paused).unwrap();
 }

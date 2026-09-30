@@ -13,13 +13,10 @@ fn timestamp() -> DateTime<Utc> {
 
 fn target() -> Value {
     json!({
-        "schema_version": 1,
-        "id": "target",
-        "topic": "Rust",
-        "scope": "Ownership",
-        "retrieval_demand": {"kind": "explain", "description": "Explain ownership."},
-        "canonical_question": "What is ownership?",
-        "correct_answer_requirements": {"rule": "Names one ownership rule."},
+        "skill": {
+            "objective": "Explain ownership",
+            "can": {"rule": "name one ownership rule"}
+        },
         "source_notes": ["Cards/note.md"]
     })
 }
@@ -36,19 +33,20 @@ fn config() -> Value {
         },
         "fuzz_enabled": false,
         "default_recommended_target_count": 3,
-        "queue_priority_policy_version": 1
+        "queue_priority_policy_version": 1,
+        "rotation_groups": { "rust": { "label": "Rust", "description": "Rust studies." } }
     })
 }
 
 fn write_catalogue(data: &Path) {
-    fs::create_dir(data.join("targets")).expect("target directory");
+    fs::create_dir_all(data.join("targets/rust")).expect("target directory");
     fs::write(
         data.join("config.yaml"),
         serde_yaml::to_string(&config()).expect("configuration YAML"),
     )
     .expect("configuration");
     fs::write(
-        data.join("targets/target.yaml"),
+        data.join("targets/rust/target.yaml"),
         serde_yaml::to_string(&target()).expect("target YAML"),
     )
     .expect("target");

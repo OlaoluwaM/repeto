@@ -13,10 +13,16 @@ fn now() -> DateTime<Utc> {
     "2026-09-26T12:00:00.000Z".parse().expect("timestamp")
 }
 
-fn config(groups: &[(&str, &[&str])]) -> RepetoConfiguration {
-    let groups = groups.iter().map(|(id, topics)| {
-        ((*id).to_owned(), json!({ "label": id.to_uppercase(), "description": format!("{id} studies"), "topics": topics }))
-    }).collect::<serde_json::Map<_, _>>();
+fn config(groups: &[&str]) -> RepetoConfiguration {
+    let groups = groups
+        .iter()
+        .map(|id| {
+            (
+                (*id).to_owned(),
+                json!({ "label": id.to_uppercase(), "description": format!("{id} studies") }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
     parse_document(SchemaKind::Configuration, json!({
         "schema_version": 1,
         "source_note_root": "/tmp",
@@ -32,7 +38,7 @@ fn config(groups: &[(&str, &[&str])]) -> RepetoConfiguration {
 fn request(limit: usize) -> QueueRequest<'static> {
     QueueRequest {
         evaluated_at: now(),
-        topic: None,
+        group: None,
         target_id: None,
         limit: NonZeroUsize::new(limit),
     }
@@ -40,7 +46,7 @@ fn request(limit: usize) -> QueueRequest<'static> {
 
 #[test]
 fn policy_four_rejects_history_free_queue_api() {
-    let config = config(&[("a", &["A"][..])]);
+    let config = config(&["a"]);
     let error = build_queue(&config, &[], request(1)).expect_err("history is required");
     assert_eq!(error.code, "rotation_history_required");
 }
@@ -77,14 +83,7 @@ fn due_review(stability: f32, confidence: Option<&str>, result: &str) -> LatestR
 
 #[test]
 fn successive_completed_first_slots_visit_five_eligible_groups_and_reads_do_not_rotate() {
-    let groups = [
-        ("a", &["A"][..]),
-        ("b", &["B"][..]),
-        ("c", &["C"][..]),
-        ("d", &["D"][..]),
-        ("e", &["E"][..]),
-    ];
-    let config = config(&groups);
+    let config = config(&["a", "b", "c", "d", "e"]);
     let ids = [
         "a-1", "a-2", "b-1", "b-2", "c-1", "c-2", "d-1", "d-2", "e-1", "e-2",
     ];
@@ -97,12 +96,12 @@ fn successive_completed_first_slots_visit_five_eligible_groups_and_reads_do_not_
             .iter()
             .map(|id| QueueTarget {
                 id,
-                topic: match id.as_bytes()[0] {
-                    b'a' => "A",
-                    b'b' => "B",
-                    b'c' => "C",
-                    b'd' => "D",
-                    _ => "E",
+                group: match id.as_bytes()[0] {
+                    b'a' => "a/a",
+                    b'b' => "b/b",
+                    b'c' => "c/c",
+                    b'd' => "d/d",
+                    _ => "e/e",
                 },
                 lifecycle_state: LifecycleState::Active,
                 needs_study: false,
@@ -144,7 +143,7 @@ fn successive_completed_first_slots_visit_five_eligible_groups_and_reads_do_not_
 
 #[test]
 fn only_original_first_events_advance_recency_including_retired_targets() {
-    let config = config(&[("a", &["A"][..]), ("b", &["B"][..]), ("c", &["C"][..])]);
+    let config = config(&["a", "b", "c"]);
     let history = [
         first_event(1, "old-a", "2026-09-20T12:00:00.000Z"),
         first_event(2, "old-b", "2026-09-21T12:00:00.000Z"),
@@ -153,35 +152,35 @@ fn only_original_first_events_advance_recency_including_retired_targets() {
     let targets = [
         QueueTarget {
             id: "old-a",
-            topic: "A",
+            group: "a/a",
             lifecycle_state: LifecycleState::Retired,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "old-b",
-            topic: "B",
+            group: "b/b",
             lifecycle_state: LifecycleState::Paused,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "new-a",
-            topic: "A",
+            group: "a/a",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "new-b",
-            topic: "B",
+            group: "b/b",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "new-c",
-            topic: "C",
+            group: "c/c",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
@@ -223,32 +222,32 @@ fn only_original_first_events_advance_recency_including_retired_targets() {
 
 #[test]
 fn tied_first_review_timestamps_use_event_sequence_before_group_id() {
-    let config = config(&[("a", &["A"][..]), ("z", &["Z"][..])]);
+    let config = config(&["a", "z"]);
     let targets = [
         QueueTarget {
             id: "old-z",
-            topic: "Z",
+            group: "z/z",
             lifecycle_state: LifecycleState::Retired,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "old-a",
-            topic: "A",
+            group: "a/a",
             lifecycle_state: LifecycleState::Retired,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "new-a",
-            topic: "A",
+            group: "a/a",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "new-z",
-            topic: "Z",
+            group: "z/z",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
@@ -271,7 +270,7 @@ fn tied_first_review_timestamps_use_event_sequence_before_group_id() {
 
 #[test]
 fn a_new_targets_first_review_counts_and_repeats_of_retired_targets_do_not() {
-    let config = config(&[("a", &["A"][..]), ("b", &["B"][..])]);
+    let config = config(&["a", "b"]);
     let history = [
         first_event(1, "old-a", "2026-09-20T12:00:00.000Z"),
         first_event(2, "fresh-b", "2026-09-21T12:00:00.000Z"),
@@ -280,28 +279,28 @@ fn a_new_targets_first_review_counts_and_repeats_of_retired_targets_do_not() {
     let targets = [
         QueueTarget {
             id: "old-a",
-            topic: "A",
+            group: "a/a",
             lifecycle_state: LifecycleState::Retired,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "fresh-b",
-            topic: "B",
+            group: "b/b",
             lifecycle_state: LifecycleState::Paused,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "new-a",
-            topic: "A",
+            group: "a/a",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "new-b",
-            topic: "B",
+            group: "b/b",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
@@ -326,7 +325,7 @@ fn a_new_targets_first_review_counts_and_repeats_of_retired_targets_do_not() {
 
 #[test]
 fn due_diversity_stays_inside_urgency_bucket_and_keeps_top_due() {
-    let config = config(&[("a", &["A"][..]), ("b", &["B"][..]), ("c", &["C"][..])]);
+    let config = config(&["a", "b", "c"]);
     let top = due_review(1.0, Some("sure"), "not_correct");
     let same_a = due_review(1.0, Some("sure"), "not_correct");
     let same_c = due_review(1.0, Some("sure"), "not_correct");
@@ -334,35 +333,35 @@ fn due_diversity_stays_inside_urgency_bucket_and_keeps_top_due() {
     let targets = [
         QueueTarget {
             id: "a-0-top",
-            topic: "A",
+            group: "a/a",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: Some(&top),
         },
         QueueTarget {
             id: "a-repeat",
-            topic: "A",
+            group: "a/a",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: Some(&same_a),
         },
         QueueTarget {
             id: "c-novel",
-            topic: "C",
+            group: "c/c",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: Some(&same_c),
         },
         QueueTarget {
             id: "b-later",
-            topic: "B",
+            group: "b/b",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: Some(&later),
         },
         QueueTarget {
             id: "b-fresh",
-            topic: "B",
+            group: "b/b",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
@@ -399,7 +398,7 @@ fn due_diversity_stays_inside_urgency_bucket_and_keeps_top_due() {
 
 #[test]
 fn due_diversity_does_not_cross_error_priority_within_one_band() {
-    let config = config(&[("a", &["A"][..]), ("b", &["B"][..]), ("c", &["C"][..])]);
+    let config = config(&["a", "b", "c"]);
     for (priority_confidence, priority_result, other_confidence, other_result) in [
         ("sure", "not_correct", "shaky", "not_correct"),
         ("guessing", "correct", "sure", "correct"),
@@ -409,28 +408,28 @@ fn due_diversity_does_not_cross_error_priority_within_one_band() {
         let targets = [
             QueueTarget {
                 id: "a-0-top",
-                topic: "A",
+                group: "a/a",
                 lifecycle_state: LifecycleState::Active,
                 needs_study: false,
                 latest_review: Some(&priority),
             },
             QueueTarget {
                 id: "a-repeat",
-                topic: "A",
+                group: "a/a",
                 lifecycle_state: LifecycleState::Active,
                 needs_study: false,
                 latest_review: Some(&priority),
             },
             QueueTarget {
                 id: "b-diverse",
-                topic: "B",
+                group: "b/b",
                 lifecycle_state: LifecycleState::Active,
                 needs_study: false,
                 latest_review: Some(&other),
             },
             QueueTarget {
                 id: "c-first",
-                topic: "C",
+                group: "c/c",
                 lifecycle_state: LifecycleState::Active,
                 needs_study: false,
                 latest_review: None,
@@ -459,54 +458,54 @@ fn due_diversity_does_not_cross_error_priority_within_one_band() {
 }
 
 #[test]
-fn topics_cycle_within_groups_after_historical_first_review_priority() {
-    let config = config(&[("a", &["A1", "A2"][..]), ("b", &["B"][..])]);
+fn subjects_cycle_within_groups_after_historical_first_review_priority() {
+    let config = config(&["a", "b"]);
     let targets = [
         QueueTarget {
             id: "old-a1",
-            topic: "A1",
+            group: "a/a1",
             lifecycle_state: LifecycleState::Retired,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "a1-1",
-            topic: "A1",
+            group: "a/a1",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "a1-2",
-            topic: "A1",
+            group: "a/a1",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "a2-1",
-            topic: "A2",
+            group: "a/a2",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "a2-2",
-            topic: "A2",
+            group: "a/a2",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "b-1",
-            topic: "B",
+            group: "b/b",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "b-2",
-            topic: "B",
+            group: "b/b",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
@@ -526,7 +525,7 @@ fn topics_cycle_within_groups_after_historical_first_review_priority() {
 
 #[test]
 fn policy_four_keeps_quotas_and_shortage_fallback() {
-    let config = config(&[("a", &["A"][..]), ("b", &["B"][..])]);
+    let config = config(&["a", "b"]);
     let due = due_review(1.0, None, "correct");
     let due_ids = (0..12)
         .map(|index| format!("due-{index:02}"))
@@ -538,14 +537,14 @@ fn policy_four_keeps_quotas_and_shortage_fallback() {
         .iter()
         .map(|id| QueueTarget {
             id,
-            topic: "A",
+            group: "a/a",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: Some(&due),
         })
         .chain(fresh_ids.iter().map(|id| QueueTarget {
             id,
-            topic: "B",
+            group: "b/b",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
@@ -581,18 +580,18 @@ fn policy_four_keeps_quotas_and_shortage_fallback() {
 
 #[test]
 fn policy_four_filters_flags_and_explicit_override() {
-    let config = config(&[("a", &["A"][..]), ("b", &["B"][..])]);
+    let config = config(&["a", "b"]);
     let targets = [
         QueueTarget {
             id: "a",
-            topic: "A",
+            group: "a/a",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "b",
-            topic: "B",
+            group: "b/b",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
@@ -603,7 +602,7 @@ fn policy_four_filters_flags_and_explicit_override() {
         &targets,
         &[],
         QueueRequest {
-            topic: Some("B"),
+            group: Some("b"),
             ..request(2)
         },
     )
@@ -612,19 +611,19 @@ fn policy_four_filters_flags_and_explicit_override() {
         filtered
             .recommended_targets
             .iter()
-            .all(|item| item.topic == "B")
+            .all(|item| item.group.starts_with("b/"))
     );
     let special = [
         QueueTarget {
             id: "needs-study",
-            topic: "A",
+            group: "a/a",
             lifecycle_state: LifecycleState::Active,
             needs_study: true,
             latest_review: None,
         },
         QueueTarget {
             id: "paused",
-            topic: "A",
+            group: "a/a",
             lifecycle_state: LifecycleState::Paused,
             needs_study: false,
             latest_review: None,
@@ -667,4 +666,146 @@ fn policy_four_filters_flags_and_explicit_override() {
         )
         .is_err()
     );
+}
+
+fn fresh(
+    id: &'static str,
+    group: &'static str,
+    lifecycle_state: LifecycleState,
+) -> QueueTarget<'static> {
+    QueueTarget {
+        id,
+        group,
+        lifecycle_state,
+        needs_study: false,
+        latest_review: None,
+    }
+}
+
+fn ordered_ids(output: &repeto::queue::QueueOutput) -> Vec<&str> {
+    output
+        .recommended_targets
+        .iter()
+        .chain(&output.remaining_eligible_targets)
+        .map(|item| item.target_id.as_str())
+        .collect()
+}
+
+#[test]
+fn a_target_directly_in_a_group_folder_rotates_as_its_own_subject() {
+    let config = config(&["a"]);
+    let targets = [
+        fresh("solo-1", "a", LifecycleState::Active),
+        fresh("solo-2", "a", LifecycleState::Active),
+        fresh("in-folder", "a/s", LifecycleState::Active),
+    ];
+    // Nothing reviewed: subjects a/s, a/solo-1, a/solo-2 (key order), one slot each.
+    let output = build_queue_with_history(&config, &targets, &[], request(3)).expect("queue");
+    assert_eq!(ordered_ids(&output), ["in-folder", "solo-1", "solo-2"]);
+    let solo = &output.recommended_targets[1];
+    assert_eq!(
+        (solo.group.as_str(), solo.subject.as_str()),
+        ("a", "solo-1")
+    );
+    let nested = &output.recommended_targets[0];
+    assert_eq!(
+        (nested.group.as_str(), nested.subject.as_str()),
+        ("a/s", "s")
+    );
+}
+
+#[test]
+fn splitting_a_self_subject_target_into_a_same_named_folder_keeps_the_subject() {
+    let config = config(&["a"]);
+    let history = [first_event(1, "broad-old", "2026-09-20T12:00:00.000Z")];
+    let targets = [
+        fresh("broad-old", "a", LifecycleState::Retired),
+        fresh("broad-new", "a/broad-old", LifecycleState::Active),
+        fresh("other", "a", LifecycleState::Active),
+    ];
+    let output = build_queue_with_history(&config, &targets, &history, request(2)).expect("queue");
+    assert_eq!(ordered_ids(&output), ["other", "broad-new"]);
+    let replacement = &output.recommended_targets[1];
+    assert_eq!(replacement.subject, "broad-old");
+    assert_eq!(
+        replacement
+            .rank_details
+            .rotation
+            .as_ref()
+            .unwrap()
+            .subject_last_first_review
+            .as_ref()
+            .unwrap()
+            .sequence,
+        1
+    );
+}
+
+#[test]
+fn equal_subject_names_in_different_groups_keep_separate_recency() {
+    let config = config(&["a", "b"]);
+    let history = [first_event(1, "old", "2026-09-20T12:00:00.000Z")];
+    let targets = [
+        fresh("old", "a/shared", LifecycleState::Retired),
+        fresh("new-a", "a/shared", LifecycleState::Active),
+        fresh("new-b", "b/shared", LifecycleState::Active),
+    ];
+    let output = build_queue_with_history(&config, &targets, &history, request(2)).expect("queue");
+    assert_eq!(ordered_ids(&output), ["new-b", "new-a"]);
+    let rotation = |index: usize| {
+        output.recommended_targets[index]
+            .rank_details
+            .rotation
+            .as_ref()
+            .unwrap()
+    };
+    assert!(rotation(0).subject_last_first_review.is_none());
+    assert_eq!(
+        rotation(1)
+            .subject_last_first_review
+            .as_ref()
+            .unwrap()
+            .sequence,
+        1
+    );
+
+    let json = serde_json::to_value(&output).expect("queue JSON");
+    let item = &json["recommended_targets"][1];
+    assert_eq!(item["group"], "a/shared");
+    assert_eq!(item["subject"], "shared");
+    assert_eq!(item["rotation_group"]["id"], "a");
+    assert!(item["rank_details"]["rotation"]["subject_last_first_review"].is_object());
+    assert!(item.get("topic").is_none());
+}
+
+#[test]
+fn group_filter_keeps_normal_eligibility_and_matches_whole_path_segments() {
+    let config = config(&["a"]);
+    let targets = [
+        fresh("in-b", "a/b", LifecycleState::Active),
+        fresh("in-bc", "a/bc", LifecycleState::Active),
+        fresh("paused-b", "a/b", LifecycleState::Paused),
+        fresh("draft-b", "a/b", LifecycleState::Draft),
+    ];
+    for (filter, expected) in [("a/b", vec!["in-b"]), ("a/bc", vec!["in-bc"])] {
+        let output = build_queue_with_history(
+            &config,
+            &targets,
+            &[],
+            QueueRequest {
+                group: Some(filter),
+                ..request(5)
+            },
+        )
+        .expect("queue");
+        assert_eq!(ordered_ids(&output), expected, "filter {filter}");
+    }
+}
+
+#[test]
+fn an_active_target_in_an_unconfigured_group_is_rejected() {
+    let config = config(&["a"]);
+    let targets = [fresh("lost", "zzz/s", LifecycleState::Active)];
+    let error = build_queue_with_history(&config, &targets, &[], request(1)).unwrap_err();
+    assert_eq!(error.code, "invalid_rotation_history");
 }

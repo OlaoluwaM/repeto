@@ -50,16 +50,10 @@
       "title": "RotationGroup",
       "type": "object",
       "additionalProperties": false,
-      "required": ["label", "description", "topics"],
+      "required": ["label", "description"],
       "properties": {
         "label": { "$ref": "#/$defs/NonBlankString" },
-        "description": { "$ref": "#/$defs/NonBlankString" },
-        "topics": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": { "$ref": "#/$defs/NonBlankString" }
-        }
+        "description": { "$ref": "#/$defs/NonBlankString" }
       }
     },
     "NonBlankString": {

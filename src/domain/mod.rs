@@ -127,3 +127,16 @@ pub enum LifecycleState {
     /// A target is retained for history but cannot be reviewed.
     Retired,
 }
+
+/// Returns the rotation group of a target's folder path: its top-level folder.
+#[must_use]
+pub fn rotation_group_of(group: &str) -> &str {
+    group.split('/').next().unwrap_or(group)
+}
+
+/// Returns the subject of a target: the second-level folder when the target's
+/// folder path has one, otherwise the target's own ID.
+#[must_use]
+pub fn subject_of<'a>(group: &'a str, target_id: &'a str) -> &'a str {
+    group.split('/').nth(1).unwrap_or(target_id)
+}

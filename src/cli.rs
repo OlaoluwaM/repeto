@@ -50,9 +50,9 @@ pub struct QueueArgs {
     /// Number of eligible targets to recommend.
     #[arg(long)]
     pub limit: Option<usize>,
-    /// Select targets with this exact topic.
-    #[arg(long)]
-    pub topic: Option<String>,
+    /// Select targets in this folder path, such as `systems` or `systems/memory`.
+    #[arg(long, value_name = "PATH")]
+    pub group: Option<String>,
     /// Select this exact target ID.
     #[arg(long)]
     pub target: Option<String>,

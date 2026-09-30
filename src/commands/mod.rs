@@ -9,7 +9,7 @@ use std::{
 };
 
 use repeto::{
-    domain::{LifecycleState, RepetoReviewRecordInput},
+    domain::{LifecycleState, RepetoReviewRecordInput, subject_of},
     events::{
         DerivedStudyState, EventRequest, EventRequestKind, replay, write_event_with_locked_replay,
     },
@@ -38,7 +38,7 @@ pub fn execute(command: Command, data_directory: &Path) -> Result<Value, CliErro
         Command::Queue(arguments) => queue(
             data_directory,
             arguments.limit,
-            arguments.topic.as_deref(),
+            arguments.group.as_deref(),
             arguments.target.as_deref(),
             arguments.at.as_deref(),
         ),
@@ -64,7 +64,7 @@ fn check(data_directory: &Path) -> Result<Value, CliError> {
 fn queue(
     data_directory: &Path,
     limit: Option<usize>,
-    topic: Option<&str>,
+    group: Option<&str>,
     target_id: Option<&str>,
     at: Option<&str>,
 ) -> Result<Value, CliError> {
@@ -89,11 +89,11 @@ fn queue(
         .collect::<Result<Vec<_>, _>>()?;
     let targets = catalogue
         .targets
-        .iter()
+        .keys()
         .zip(&latest_reviews)
-        .map(|((id, definition), latest_review)| QueueTarget {
+        .map(|(id, latest_review)| QueueTarget {
             id,
-            topic: &definition.topic,
+            group: target_group(&catalogue, id),
             lifecycle_state: state
                 .target(id)
                 .map_or(LifecycleState::Draft, |target| target.lifecycle),
@@ -107,7 +107,7 @@ fn queue(
         &catalogue.events,
         QueueRequest {
             evaluated_at,
-            topic,
+            group,
             target_id,
             limit,
         },
@@ -187,12 +187,14 @@ fn target_list(data_directory: &Path) -> Result<Value, CliError> {
     let state = replay_catalogue(&catalogue)?;
     let targets = catalogue
         .targets
-        .iter()
-        .map(|(id, definition)| {
+        .keys()
+        .map(|id| {
             let target = state.target(id);
+            let group = target_group(&catalogue, id);
             json!({
                 "id": id,
-                "topic": definition.topic,
+                "group": group,
+                "subject": subject_of(group, id),
                 "lifecycle": lifecycle_name(target.map_or(LifecycleState::Draft, |item| item.lifecycle)),
                 "needs_study": target.is_some_and(|item| item.needs_study),
             })
@@ -219,7 +221,11 @@ fn target_show(data_directory: &Path, id: &str) -> Result<Value, CliError> {
         .and_then(|review| review.payload.get("metadata"))
         .and_then(|metadata| metadata.get("verification_sources"))
         .cloned();
+    let group = target_group(&catalogue, id);
     Ok(json!({
+        "id": id,
+        "group": group,
+        "subject": subject_of(group, id),
         "definition": definition,
         "lifecycle": lifecycle_name(target.lifecycle),
         "needs_study": target.needs_study,
@@ -441,7 +447,8 @@ fn derive_review_result(
         .get(target_id)
         .ok_or_else(|| unknown_target(target_id))?;
     let expected = definition
-        .correct_answer_requirements
+        .skill
+        .can
         .iter()
         .map(|(id, description)| (id.to_string(), description.to_string()))
         .collect::<BTreeMap<_, _>>();
@@ -621,7 +628,10 @@ fn source_target_files<'a>(
                 .ok_or_else(|| unknown_target(id))
                 .and_then(|definition| {
                     Ok(TargetFile {
-                        path: std::path::PathBuf::from(format!("{id}.yaml")),
+                        path: std::path::PathBuf::from(format!(
+                            "{}/{id}.yaml",
+                            target_group(catalogue, id)
+                        )),
                         document: serialize(definition)?,
                     })
                 })
@@ -631,6 +641,11 @@ fn source_target_files<'a>(
 
 fn replay_catalogue(catalogue: &Catalogue) -> Result<DerivedStudyState, CliError> {
     replay(catalogue).map_err(CliError::from)
+}
+
+/// Returns a catalogue target's folder path. Every loaded target has one.
+fn target_group<'a>(catalogue: &'a Catalogue, id: &str) -> &'a str {
+    catalogue.target_groups.get(id).map_or("", String::as_str)
 }
 
 fn definition_value(catalogue: &Catalogue, id: &str) -> Result<Value, CliError> {

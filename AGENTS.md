@@ -33,6 +33,20 @@ toolchain.
 - Rust owns cross-file and state-transition rules.
 - Raw review JSON rejects duplicate object names before schema validation.
 - Each scheduling fact is stored once under one closed scheduling object.
+- Target IDs come from file names and groups from folders under `targets/`:
+  `targets/<group>/<id>.yaml` or `targets/<group>/<subject>/<id>.yaml`, with
+  names matching `^[a-z0-9]+(?:-[a-z0-9]+)*$`. IDs are unique across the tree,
+  the top-level folder must be a `rotation_groups` key in config, and depth is
+  fixed at 2 in code. Targets have no `id`, `schema_version`, or group field.
+- A target file is `skill.objective`, `skill.can` (kebab-case key to statement),
+  and `source_notes`. A review's `requirement_checks` keys must equal the `can`
+  keys. The activation `definition` is the parsed file content and excludes the
+  folder, so moving a file keeps its history; renaming one orphans its events
+  and fails `repeto check`.
+- Queue rotation uses group (top-level folder) and subject (second-level
+  folder, or the target's own ID when it sits directly in a group folder).
+  Subject keys are namespaced by group. `queue --group PATH` matches a folder
+  path or its descendants by whole segments.
 - Active target definitions are immutable.
 - Any change to an active target retires it with a reason and activates a new
   target with a new ID. History does not carry over.

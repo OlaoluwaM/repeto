@@ -4,42 +4,23 @@
   "title": "RepetoTargetDefinition",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schema_version",
-    "id",
-    "topic",
-    "scope",
-    "retrieval_demand",
-    "canonical_question",
-    "correct_answer_requirements",
-    "source_notes"
-  ],
+  "required": ["skill", "source_notes"],
   "properties": {
-    "schema_version": { "const": 1 },
-    "id": { "$ref": "#/$defs/NonBlankString" },
-    "topic": { "$ref": "#/$defs/NonBlankString" },
-    "scope": { "$ref": "#/$defs/NonBlankString" },
-    "retrieval_demand": {
+    "skill": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "description"],
+      "required": ["objective", "can"],
       "properties": {
-        "kind": {
-          "type": "string",
-          "enum": ["recall", "explain", "derive", "compare", "apply"]
-        },
-        "description": { "$ref": "#/$defs/NonBlankString" }
+        "objective": { "$ref": "#/$defs/NonBlankString" },
+        "can": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$" },
+          "additionalProperties": { "$ref": "#/$defs/NonBlankString" }
+        }
       }
     },
-    "canonical_question": { "$ref": "#/$defs/NonBlankString" },
-    "correct_answer_requirements": {
-      "type": "object",
-      "minProperties": 1,
-      "propertyNames": { "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$" },
-      "additionalProperties": { "$ref": "#/$defs/NonBlankString" }
-    },
-    "source_notes": { "$ref": "#/$defs/NonBlankStringSet" },
-    "origin_references": { "$ref": "#/$defs/NonBlankStringSet" }
+    "source_notes": { "$ref": "#/$defs/NonBlankStringSet" }
   },
   "$defs": {
     "NonBlankString": {

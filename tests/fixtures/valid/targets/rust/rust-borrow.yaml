@@ -1,0 +1,6 @@
+skill:
+  objective: Explain what an immutable borrow permits in Rust
+  can:
+    read-access: state that it grants read access without transferring ownership
+source_notes:
+  - Cards/Rust Borrowing.md

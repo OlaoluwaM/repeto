@@ -32,14 +32,14 @@ fn explicit_active_target_overrides_early_and_needs_study() {
         &config(),
         &[QueueTarget {
             id: "target",
-            topic: "Rust",
+            group: "rust",
             lifecycle_state: LifecycleState::Active,
             needs_study: true,
             latest_review: Some(&review),
         }],
         QueueRequest {
             evaluated_at: now(),
-            topic: None,
+            group: None,
             target_id: Some("target"),
             limit: None,
         },
@@ -54,25 +54,25 @@ fn explicit_active_target_overrides_early_and_needs_study() {
 }
 
 #[test]
-fn bootstrap_round_robins_topics_without_randomness() {
+fn bootstrap_round_robins_subjects_without_randomness() {
     let targets = [
         QueueTarget {
             id: "b-2",
-            topic: "b",
+            group: "b/s",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "a-1",
-            topic: "a",
+            group: "a/s",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "b-1",
-            topic: "b",
+            group: "b/s",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
@@ -83,7 +83,7 @@ fn bootstrap_round_robins_topics_without_randomness() {
         &targets,
         QueueRequest {
             evaluated_at: now(),
-            topic: None,
+            group: None,
             target_id: None,
             limit: None,
         },
@@ -119,28 +119,28 @@ fn due_priority_separates_confident_errors_from_guessing_successes() {
     let targets = [
         QueueTarget {
             id: "plain",
-            topic: "Rust",
+            group: "rust",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: Some(&plain),
         },
         QueueTarget {
             id: "confident-error",
-            topic: "Rust",
+            group: "rust",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: Some(&confident_error),
         },
         QueueTarget {
             id: "guessing-success",
-            topic: "Rust",
+            group: "rust",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: Some(&guessing_success),
         },
         QueueTarget {
             id: "no-confidence",
-            topic: "Rust",
+            group: "rust",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: Some(&no_confidence),
@@ -151,7 +151,7 @@ fn due_priority_separates_confident_errors_from_guessing_successes() {
         &targets,
         QueueRequest {
             evaluated_at: now(),
-            topic: None,
+            group: None,
             target_id: None,
             limit: None,
         },
@@ -201,7 +201,7 @@ fn ranked_due<'a>(
         .zip(ids)
         .map(|(review, id)| QueueTarget {
             id,
-            topic: "Rust",
+            group: "rust",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: Some(review),
@@ -212,7 +212,7 @@ fn ranked_due<'a>(
         &targets,
         QueueRequest {
             evaluated_at: now(),
-            topic: None,
+            group: None,
             target_id: None,
             limit: NonZeroUsize::new(20),
         },
@@ -304,35 +304,35 @@ fn queue_filters_exclusions_and_limit_before_bootstrap() {
     let targets = [
         QueueTarget {
             id: "due",
-            topic: "Rust",
+            group: "rust",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: Some(&due),
         },
         QueueTarget {
             id: "new-rust",
-            topic: "Rust",
+            group: "rust",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "new-other",
-            topic: "Other",
+            group: "other",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "paused",
-            topic: "Rust",
+            group: "rust",
             lifecycle_state: LifecycleState::Paused,
             needs_study: false,
             latest_review: None,
         },
         QueueTarget {
             id: "needs-study",
-            topic: "Rust",
+            group: "rust",
             lifecycle_state: LifecycleState::Active,
             needs_study: true,
             latest_review: None,
@@ -343,7 +343,7 @@ fn queue_filters_exclusions_and_limit_before_bootstrap() {
         &targets,
         QueueRequest {
             evaluated_at: now(),
-            topic: Some("Rust"),
+            group: Some("rust"),
             target_id: None,
             limit: NonZeroUsize::new(1),
         },
@@ -363,7 +363,7 @@ fn assert_error_unavailable(targets: &[QueueTarget<'_>], id: &str) {
             targets,
             QueueRequest {
                 evaluated_at: now(),
-                topic: None,
+                group: None,
                 target_id: Some(id),
                 limit: None
             },
@@ -401,14 +401,14 @@ fn mixed_queue_with_policy(
         .iter()
         .map(|id| QueueTarget {
             id,
-            topic: "Rust",
+            group: "rust",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: Some(&review),
         })
         .chain(first_ids.iter().map(|id| QueueTarget {
             id,
-            topic: "Rust",
+            group: "rust",
             lifecycle_state: LifecycleState::Active,
             needs_study: false,
             latest_review: None,
@@ -419,7 +419,7 @@ fn mixed_queue_with_policy(
         &targets,
         QueueRequest {
             evaluated_at: now(),
-            topic: None,
+            group: None,
             target_id: None,
             limit: NonZeroUsize::new(limit),
         },
@@ -509,24 +509,24 @@ fn mixed_queue_fills_shortages_without_losing_or_duplicating_targets() {
 fn mixed_queue_preserves_group_priorities_and_stable_output() {
     let urgent = due_review(1.0, None, "correct");
     let later = due_review(4.0, None, "correct");
-    let target = |id, topic, latest_review| QueueTarget {
+    let target = |id, group, latest_review| QueueTarget {
         id,
-        topic,
+        group,
         lifecycle_state: LifecycleState::Active,
         needs_study: false,
         latest_review,
     };
     let mut targets = vec![
-        target("b-2", "b", None),
-        target("later", "a", Some(&later)),
-        target("a-2", "a", None),
-        target("urgent", "b", Some(&urgent)),
-        target("b-1", "b", None),
-        target("a-1", "a", None),
+        target("b-2", "b/s", None),
+        target("later", "a/s", Some(&later)),
+        target("a-2", "a/s", None),
+        target("urgent", "b/s", Some(&urgent)),
+        target("b-1", "b/s", None),
+        target("a-1", "a/s", None),
     ];
     let request = QueueRequest {
         evaluated_at: now(),
-        topic: None,
+        group: None,
         target_id: None,
         limit: NonZeroUsize::new(3),
     };
@@ -558,26 +558,26 @@ fn mixed_queue_filters_before_allocation_and_preserves_explicit_overrides() {
     let due = due_review(2.3, None, "correct");
     let mut early = due.clone();
     early.due_at = now() + Duration::days(1);
-    let target = |id, topic, lifecycle_state, needs_study, latest_review| QueueTarget {
+    let target = |id, group, lifecycle_state, needs_study, latest_review| QueueTarget {
         id,
-        topic,
+        group,
         lifecycle_state,
         needs_study,
         latest_review,
     };
     let targets = [
-        target("due", "Rust", LifecycleState::Active, false, Some(&due)),
-        target("first", "Rust", LifecycleState::Active, false, None),
-        target("other", "Other", LifecycleState::Active, false, None),
-        target("draft", "Rust", LifecycleState::Draft, false, None),
-        target("paused", "Rust", LifecycleState::Paused, false, None),
-        target("retired", "Rust", LifecycleState::Retired, false, None),
-        target("study", "Rust", LifecycleState::Active, true, Some(&early)),
-        target("early", "Rust", LifecycleState::Active, false, Some(&early)),
+        target("due", "rust", LifecycleState::Active, false, Some(&due)),
+        target("first", "rust", LifecycleState::Active, false, None),
+        target("other", "other", LifecycleState::Active, false, None),
+        target("draft", "rust", LifecycleState::Draft, false, None),
+        target("paused", "rust", LifecycleState::Paused, false, None),
+        target("retired", "rust", LifecycleState::Retired, false, None),
+        target("study", "rust", LifecycleState::Active, true, Some(&early)),
+        target("early", "rust", LifecycleState::Active, false, Some(&early)),
     ];
     let request = QueueRequest {
         evaluated_at: now(),
-        topic: Some("Rust"),
+        group: Some("rust"),
         target_id: None,
         limit: NonZeroUsize::new(1),
     };
@@ -630,7 +630,7 @@ fn queue_policy_configuration_rejects_unsupported_versions() {
 fn missed_review_target(review: &LatestReview) -> QueueTarget<'_> {
     QueueTarget {
         id: "target",
-        topic: "Rust",
+        group: "rust",
         lifecycle_state: LifecycleState::Active,
         needs_study: false,
         latest_review: Some(review),
@@ -661,7 +661,7 @@ fn policy_three_holds_a_missed_review_back_for_twelve_hours() {
             &[target],
             QueueRequest {
                 evaluated_at,
-                topic: None,
+                group: None,
                 target_id: None,
                 limit: None,
             },
@@ -695,7 +695,7 @@ fn policy_two_ignores_the_review_hold_immediately_after_review() {
         &[target],
         QueueRequest {
             evaluated_at: reviewed_at + Duration::milliseconds(1),
-            topic: None,
+            group: None,
             target_id: None,
             limit: None,
         },
@@ -726,7 +726,7 @@ fn policy_three_matches_policy_two_when_due_at_exceeds_the_review_hold() {
     let target = missed_review_target(&review);
     let request = QueueRequest {
         evaluated_at: review.due_at,
-        topic: None,
+        group: None,
         target_id: None,
         limit: None,
     };
@@ -742,7 +742,7 @@ fn explicit_target_reports_early_under_policy_three_within_the_review_hold() {
     let target = missed_review_target(&review);
     let request = QueueRequest {
         evaluated_at: reviewed_at + Duration::hours(1),
-        topic: None,
+        group: None,
         target_id: Some("target"),
         limit: None,
     };
@@ -771,4 +771,110 @@ fn policy_three_allocation_matches_policy_two_without_recent_reviews() {
         let policy_three = mixed_queue_with_policy(due, first, limit, 3);
         assert_eq!(policy_two, policy_three);
     }
+}
+
+fn fresh_target<'a>(id: &'a str, group: &'a str) -> QueueTarget<'a> {
+    QueueTarget {
+        id,
+        group,
+        lifecycle_state: LifecycleState::Active,
+        needs_study: false,
+        latest_review: None,
+    }
+}
+
+fn queue_ids(targets: &[QueueTarget<'_>], group: Option<&str>) -> Vec<String> {
+    let output = build_queue(
+        &config(),
+        targets,
+        QueueRequest {
+            evaluated_at: now(),
+            group,
+            target_id: None,
+            limit: None,
+        },
+    )
+    .expect("queue");
+    output
+        .recommended_targets
+        .into_iter()
+        .chain(output.remaining_eligible_targets)
+        .map(|target| target.target_id)
+        .collect()
+}
+
+#[test]
+fn group_filter_is_segment_aware() {
+    let targets = [
+        fresh_target("top", "a"),
+        fresh_target("inside", "a/b"),
+        fresh_target("deeper-sibling", "a/bc"),
+        fresh_target("prefix-sibling", "ab"),
+        fresh_target("other", "c"),
+    ];
+    assert_eq!(queue_ids(&targets, Some("a/b")), ["inside"]);
+    assert_eq!(queue_ids(&targets, Some("a/bc")), ["deeper-sibling"]);
+    assert_eq!(
+        queue_ids(&targets, Some("a")),
+        ["inside", "deeper-sibling", "top"]
+    );
+    assert_eq!(queue_ids(&targets, Some("ab")), ["prefix-sibling"]);
+    assert!(queue_ids(&targets, Some("a/")).is_empty());
+    assert!(queue_ids(&targets, Some("missing")).is_empty());
+    assert_eq!(queue_ids(&targets, None).len(), 5);
+}
+
+#[test]
+fn a_target_directly_in_a_group_folder_is_its_own_subject() {
+    let targets = [
+        fresh_target("solo-b", "g"),
+        fresh_target("solo-a", "g"),
+        fresh_target("in-folder-2", "g/s"),
+        fresh_target("in-folder-1", "g/s"),
+    ];
+    let output = build_queue(
+        &config(),
+        &targets,
+        QueueRequest {
+            evaluated_at: now(),
+            group: None,
+            target_id: None,
+            limit: None,
+        },
+    )
+    .expect("queue");
+    let all = output
+        .recommended_targets
+        .iter()
+        .chain(&output.remaining_eligible_targets)
+        .collect::<Vec<_>>();
+    // Subjects g/s, g/solo-a, g/solo-b each take one slot per pass.
+    assert_eq!(
+        all.iter().map(|t| t.target_id.as_str()).collect::<Vec<_>>(),
+        ["in-folder-1", "solo-a", "solo-b", "in-folder-2"]
+    );
+    let solo = all.iter().find(|t| t.target_id == "solo-a").expect("solo");
+    assert_eq!(
+        (solo.group.as_str(), solo.subject.as_str()),
+        ("g", "solo-a")
+    );
+    let nested = all
+        .iter()
+        .find(|t| t.target_id == "in-folder-1")
+        .expect("nested");
+    assert_eq!(
+        (nested.group.as_str(), nested.subject.as_str()),
+        ("g/s", "s")
+    );
+}
+
+#[test]
+fn equal_subject_names_in_different_groups_do_not_collide() {
+    let targets = [
+        fresh_target("x-2", "one/shared"),
+        fresh_target("x-1", "one/shared"),
+        fresh_target("y-1", "two/shared"),
+    ];
+    // Separate subjects alternate; a merged subject would emit x-1, x-2, y-1.
+    assert_eq!(queue_ids(&targets, None), ["x-1", "y-1", "x-2"]);
 }

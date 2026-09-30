@@ -16,13 +16,12 @@ fn configuration(root: &str) -> Value {
 }
 
 fn target() -> Value {
-    parse_yaml(include_str!("fixtures/valid/targets/rust-borrow.yaml")).unwrap()
+    parse_yaml(include_str!("fixtures/valid/targets/rust/rust-borrow.yaml")).unwrap()
 }
 
-fn target_file(document: Value) -> TargetFile {
-    let id = document["id"].as_str().unwrap();
+fn target_file(id: &str, document: Value) -> TargetFile {
     TargetFile {
-        path: PathBuf::from(format!("{id}.yaml")),
+        path: PathBuf::from(format!("rust/{id}.yaml")),
         document,
     }
 }
@@ -51,6 +50,18 @@ fn assessment_keys_must_equal_target_keys_and_no_answer_checks_are_false() {
     review["assessment"]["requirement_checks"] = json!({ "unknown": true });
     let error = validate_review_input_for_target(&review, &target).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
+
+    // Missing a `can` key, and carrying an extra key beside a valid one, both fail.
+    review["assessment"]["requirement_checks"] = json!({});
+    let error = validate_review_input_for_target(&review, &target).unwrap_err();
+    assert_eq!(error.code, "schema_validation_failed");
+    review["assessment"]["requirement_checks"] = json!({ "read-access": true, "extra": true });
+    let error = validate_review_input_for_target(&review, &target).unwrap_err();
+    assert_eq!(error.code, "schema_validation_failed");
+    assert_eq!(
+        error.details["expected_requirement_ids"],
+        json!(["read-access"])
+    );
 
     review["assessment"]["requirement_checks"] = json!({ "read-access": true });
     review["assessment"]["answer_submitted"] = json!(false);
@@ -97,8 +108,11 @@ fn source_note_root_must_be_an_existing_absolute_directory() {
         ),
         (file.to_string_lossy().into_owned(), "not_directory"),
     ] {
-        let error = validate_source_note_paths(&configuration(&root), &[target_file(target())])
-            .unwrap_err();
+        let error = validate_source_note_paths(
+            &configuration(&root),
+            &[target_file("rust-borrow", target())],
+        )
+        .unwrap_err();
         assert_eq!(error.code, "invalid_source_note_root");
         assert_eq!(error.details["reason"], reason);
     }
@@ -117,17 +131,15 @@ fn source_note_checks_aggregate_paths_and_reject_symlink_escapes() {
     std::os::unix::fs::symlink(&outside, root.join("Cards/escape.md")).unwrap();
 
     let mut escaped = target();
-    escaped["id"] = json!("rust-escape");
     escaped["source_notes"] = json!(["Cards/escape.md"]);
     let mut missing = target();
-    missing["id"] = json!("rust-missing");
     missing["source_notes"] = json!(["Cards/missing.md"]);
     let error = validate_source_note_paths(
         &configuration(root.to_str().unwrap()),
         &[
-            target_file(target()),
-            target_file(escaped),
-            target_file(missing),
+            target_file("rust-borrow", target()),
+            target_file("rust-escape", escaped),
+            target_file("rust-missing", missing),
         ],
     )
     .unwrap_err();
@@ -173,17 +185,15 @@ fn source_note_paths_report_every_failure_in_deterministic_order() {
         .iter()
         .map(|(id, path, _)| {
             let mut document = target();
-            document["id"] = json!(id);
             document["source_notes"] = json!([path]);
-            target_file(document)
+            target_file(id, document)
         })
         .collect::<Vec<_>>();
     #[cfg(unix)]
     {
         let mut escaped = target();
-        escaped["id"] = json!("target-escape");
         escaped["source_notes"] = json!(["Cards/escape.md"]);
-        files.push(target_file(escaped));
+        files.push(target_file("target-escape", escaped));
     }
 
     let error =
@@ -214,11 +224,11 @@ fn source_note_paths_report_every_failure_in_deterministic_order() {
 fn structural_catalogue_validation_does_not_read_source_note_paths() {
     let temporary_directory = tempfile::tempdir().unwrap();
     let root = temporary_directory.path().join("missing-vault");
-    let target_entry = target_file(target());
+    let target_entry = target_file("rust-borrow", target());
     validate_catalogue(&configuration(root.to_str().unwrap()), &[target_entry], &[]).unwrap();
     let error = validate_source_note_paths(
         &configuration(root.to_str().unwrap()),
-        &[target_file(target())],
+        &[target_file("rust-borrow", target())],
     )
     .unwrap_err();
     assert_eq!(error.code, "invalid_source_note_root");

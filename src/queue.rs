@@ -16,7 +16,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
-    domain::{LifecycleState, RepetoConfiguration},
+    domain::{LifecycleState, RepetoConfiguration, rotation_group_of, subject_of},
     output::serialize_millis,
     scheduler::{LatestReview, Scheduler, SchedulerError},
 };
@@ -24,15 +24,42 @@ use crate::{
 #[derive(Clone, Copy, Debug)]
 pub struct QueueTarget<'a> {
     pub id: &'a str,
-    pub topic: &'a str,
+    /// The target's folder path under `targets/`, such as `systems/memory`.
+    pub group: &'a str,
     pub lifecycle_state: LifecycleState,
     pub needs_study: bool,
     pub latest_review: Option<&'a LatestReview>,
 }
+
+impl QueueTarget<'_> {
+    fn rotation_group_id(&self) -> &str {
+        rotation_group_of(self.group)
+    }
+
+    fn subject(&self) -> &str {
+        subject_of(self.group, self.id)
+    }
+
+    /// The subject namespaced by rotation group, so equal subject names in
+    /// different groups stay distinct.
+    fn subject_key(&self) -> String {
+        format!("{}/{}", self.rotation_group_id(), self.subject())
+    }
+}
+
+/// Reports whether a folder path equals `filter` or lies below it.
+fn group_matches(group: &str, filter: &str) -> bool {
+    group
+        .strip_prefix(filter)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct QueueRequest<'a> {
     pub evaluated_at: DateTime<Utc>,
-    pub topic: Option<&'a str>,
+    /// Keeps targets whose folder path equals this path or starts with it
+    /// followed by `/`.
+    pub group: Option<&'a str>,
     pub target_id: Option<&'a str>,
     pub limit: Option<NonZeroUsize>,
 }
@@ -81,7 +108,7 @@ pub struct FirstReviewStamp {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RotationRankDetails {
     pub group_last_first_review: Option<FirstReviewStamp>,
-    pub topic_last_first_review: Option<FirstReviewStamp>,
+    pub subject_last_first_review: Option<FirstReviewStamp>,
     pub diversity_preferred: bool,
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -93,7 +120,8 @@ pub struct RotationGroupInfo {
 pub struct RankedTarget {
     pub rank: usize,
     pub target_id: String,
-    pub topic: String,
+    pub group: String,
+    pub subject: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rotation_group: Option<RotationGroupInfo>,
     pub rank_details: QueueRankDetails,
@@ -164,11 +192,11 @@ pub fn build_queue_with_history(
     }
     let mut due = Vec::new();
     let mut fresh = Vec::new();
-    for target in targets
-        .iter()
-        .copied()
-        .filter(|target| request.topic.is_none_or(|topic| topic == target.topic))
-    {
+    for target in targets.iter().copied().filter(|target| {
+        request
+            .group
+            .is_none_or(|group| group_matches(target.group, group))
+    }) {
         if target.lifecycle_state != LifecycleState::Active || target.needs_study {
             continue;
         }
@@ -305,9 +333,9 @@ fn due_bucket(target: &RankedTarget) -> (u8, bool, bool) {
 }
 
 struct RotationContext {
-    topics: BTreeMap<String, RotationGroupInfo>,
+    groups: BTreeMap<String, RotationGroupInfo>,
     group_last: BTreeMap<String, FirstReviewStamp>,
-    topic_last: BTreeMap<String, FirstReviewStamp>,
+    subject_last: BTreeMap<String, FirstReviewStamp>,
 }
 
 impl RotationContext {
@@ -316,45 +344,38 @@ impl RotationContext {
         targets: &[QueueTarget<'_>],
         events: &[Value],
     ) -> Result<Self, QueueError> {
-        let mut topics = BTreeMap::new();
-        let groups = &configuration.rotation_groups;
-        if groups.is_empty() {
+        let configured = &configuration.rotation_groups;
+        if configured.is_empty() {
             return Err(rotation_error("policy 4 requires rotation groups"));
         }
-        for (id, group) in groups {
-            for topic in &group.topics {
-                if topics
-                    .insert(
-                        topic.to_string(),
-                        RotationGroupInfo {
-                            id: id.to_string(),
-                            label: group.label.to_string(),
-                        },
-                    )
-                    .is_some()
-                {
-                    return Err(rotation_error(
-                        "a topic belongs to multiple rotation groups",
-                    ));
-                }
-            }
-        }
-        let target_topics = targets
+        let groups = configured
             .iter()
-            .map(|target| (target.id, target.topic))
+            .map(|(id, group)| {
+                (
+                    id.to_string(),
+                    RotationGroupInfo {
+                        id: id.to_string(),
+                        label: group.label.to_string(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let target_folders = targets
+            .iter()
+            .map(|target| (target.id, target))
             .collect::<BTreeMap<_, _>>();
         for target in targets {
             if target.lifecycle_state == LifecycleState::Active
-                && !topics.contains_key(target.topic)
+                && !groups.contains_key(target.rotation_group_id())
             {
                 return Err(rotation_error(
-                    "an active target topic has no rotation group",
+                    "an active target's top-level folder has no rotation group",
                 ));
             }
         }
         let mut reviewed = BTreeMap::<&str, bool>::new();
         let mut group_last = BTreeMap::new();
-        let mut topic_last = BTreeMap::new();
+        let mut subject_last = BTreeMap::new();
         for event in events {
             let kind = event.get("event_type").and_then(Value::as_str);
             let target_id = event
@@ -364,10 +385,10 @@ impl RotationContext {
             match kind {
                 Some("review_completed") if !reviewed.get(target_id).copied().unwrap_or(false) => {
                     reviewed.insert(target_id, true);
-                    let topic = target_topics
+                    let target = target_folders
                         .get(target_id)
                         .ok_or_else(|| rotation_error("historical review target is missing"))?;
-                    let Some(group) = topics.get(*topic) else {
+                    let Some(group) = groups.get(target.rotation_group_id()) else {
                         continue;
                     };
                     let stamp = FirstReviewStamp {
@@ -385,26 +406,28 @@ impl RotationContext {
                             .ok_or_else(|| rotation_error("historical review has no sequence"))?,
                     };
                     update_latest(&mut group_last, &group.id, &stamp);
-                    update_latest(&mut topic_last, topic, &stamp);
+                    update_latest(&mut subject_last, &target.subject_key(), &stamp);
                 }
                 _ => {}
             }
         }
         Ok(Self {
-            topics,
+            groups,
             group_last,
-            topic_last,
+            subject_last,
         })
     }
 
     fn decorate(&self, target: &mut RankedTarget) {
-        let Some(group) = self.topics.get(&target.topic) else {
+        let group_id = rotation_group_of(&target.group);
+        let Some(group) = self.groups.get(group_id) else {
             return;
         };
+        let subject_key = format!("{group_id}/{}", target.subject);
         target.rotation_group = Some(group.clone());
         target.rank_details.rotation = Some(RotationRankDetails {
             group_last_first_review: self.group_last.get(&group.id).cloned(),
-            topic_last_first_review: self.topic_last.get(&target.topic).cloned(),
+            subject_last_first_review: self.subject_last.get(&subject_key).cloned(),
             diversity_preferred: false,
         });
     }
@@ -415,30 +438,30 @@ impl RotationContext {
     ) -> Result<Vec<RankedTarget>, QueueError> {
         let mut grouped = BTreeMap::<String, BTreeMap<String, Vec<QueueTarget<'_>>>>::new();
         for target in targets {
-            let group = self.topics.get(target.topic).ok_or_else(|| {
-                rotation_error("a first-review target topic has no rotation group")
+            let group = self.groups.get(target.rotation_group_id()).ok_or_else(|| {
+                rotation_error("a first-review target's top-level folder has no rotation group")
             })?;
             grouped
                 .entry(group.id.clone())
                 .or_default()
-                .entry(target.topic.to_owned())
+                .entry(target.subject_key())
                 .or_default()
                 .push(target);
         }
         let mut groups = grouped
             .into_iter()
-            .map(|(id, topics)| {
-                let mut topics = topics.into_iter().collect::<Vec<_>>();
-                topics.sort_by(|left, right| {
-                    self.topic_last
+            .map(|(id, subjects)| {
+                let mut subjects = subjects.into_iter().collect::<Vec<_>>();
+                subjects.sort_by(|left, right| {
+                    self.subject_last
                         .get(&left.0)
-                        .cmp(&self.topic_last.get(&right.0))
+                        .cmp(&self.subject_last.get(&right.0))
                         .then_with(|| left.0.cmp(&right.0))
                 });
-                for (_, items) in &mut topics {
+                for (_, items) in &mut subjects {
                     items.sort_by(|left, right| right.id.cmp(left.id));
                 }
-                (id, topics, 0usize)
+                (id, subjects, 0usize)
             })
             .collect::<Vec<_>>();
         groups.sort_by(|left, right| {
@@ -449,23 +472,24 @@ impl RotationContext {
         });
         let total = groups
             .iter()
-            .flat_map(|(_, topics, _)| topics)
+            .flat_map(|(_, subjects, _)| subjects)
             .map(|(_, items)| items.len())
             .sum();
         let mut output = Vec::with_capacity(total);
         while output.len() < total {
-            for (_, topics, next_topic) in &mut groups {
-                if topics.iter().all(|(_, items)| items.is_empty()) {
+            for (_, subjects, next_subject) in &mut groups {
+                if subjects.iter().all(|(_, items)| items.is_empty()) {
                     continue;
                 }
-                for offset in 0..topics.len() {
-                    let index = (*next_topic + offset) % topics.len();
-                    if let Some(target) = topics[index].1.pop() {
-                        *next_topic = (index + 1) % topics.len();
+                for offset in 0..subjects.len() {
+                    let index = (*next_subject + offset) % subjects.len();
+                    if let Some(target) = subjects[index].1.pop() {
+                        *next_subject = (index + 1) % subjects.len();
                         let mut ranked = RankedTarget {
                             rank: 0,
                             target_id: target.id.to_owned(),
-                            topic: target.topic.to_owned(),
+                            group: target.group.to_owned(),
+                            subject: target.subject().to_owned(),
                             rotation_group: None,
                             rank_details: QueueRankDetails {
                                 reason: QueueRankReason::NewBootstrap,
@@ -552,7 +576,8 @@ fn explicit_queue(
     let ranked = RankedTarget {
         rank: 1,
         target_id: target.id.to_owned(),
-        topic: target.topic.to_owned(),
+        group: target.group.to_owned(),
+        subject: target.subject().to_owned(),
         rank_details: QueueRankDetails {
             reason: QueueRankReason::ExplicitTarget,
             retrievability_at_evaluation: None,
@@ -589,7 +614,8 @@ impl DueTarget<'_> {
         RankedTarget {
             rank: 0,
             target_id: self.target.id.to_owned(),
-            topic: self.target.topic.to_owned(),
+            group: self.target.group.to_owned(),
+            subject: self.target.subject().to_owned(),
             rotation_group: None,
             rank_details: QueueRankDetails {
                 reason: QueueRankReason::DueReview,
@@ -639,25 +665,29 @@ fn compare_due(left: &DueTarget<'_>, right: &DueTarget<'_>) -> Ordering {
         .then_with(|| left.target.id.cmp(right.target.id))
 }
 fn bootstrap(targets: Vec<QueueTarget<'_>>) -> Vec<RankedTarget> {
-    let mut topics = BTreeMap::<&str, Vec<QueueTarget<'_>>>::new();
+    let mut subjects = BTreeMap::<String, Vec<QueueTarget<'_>>>::new();
     for target in targets {
-        topics.entry(target.topic).or_default().push(target);
+        subjects
+            .entry(target.subject_key())
+            .or_default()
+            .push(target);
     }
-    for items in topics.values_mut() {
+    for items in subjects.values_mut() {
         items.sort_by(|a, b| a.id.cmp(b.id));
     }
-    let total = topics.values().map(Vec::len).sum();
+    let total = subjects.values().map(Vec::len).sum();
     let mut indexes = BTreeMap::<&str, usize>::new();
     let mut output = Vec::with_capacity(total);
     while output.len() < total {
-        for (topic, items) in &topics {
-            let index = indexes.entry(topic).or_default();
+        for (subject, items) in &subjects {
+            let index = indexes.entry(subject).or_default();
             if let Some(target) = items.get(*index) {
                 *index += 1;
                 output.push(RankedTarget {
                     rank: 0,
                     target_id: target.id.to_owned(),
-                    topic: target.topic.to_owned(),
+                    group: target.group.to_owned(),
+                    subject: target.subject().to_owned(),
                     rotation_group: None,
                     rank_details: QueueRankDetails {
                         reason: QueueRankReason::NewBootstrap,

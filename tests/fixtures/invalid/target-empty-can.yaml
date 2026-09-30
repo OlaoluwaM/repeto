@@ -1,0 +1,5 @@
+skill:
+  objective: Explain what an immutable borrow permits in Rust
+  can: {}
+source_notes:
+  - Cards/Rust Borrowing.md

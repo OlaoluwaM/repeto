@@ -29,3 +29,7 @@ scheduler:
 fuzz_enabled: false
 default_recommended_target_count: 3
 queue_priority_policy_version: 1
+rotation_groups:
+  rust:
+    label: Rust
+    description: Rust language and ownership model.

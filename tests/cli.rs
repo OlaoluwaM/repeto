@@ -39,16 +39,16 @@ fn setup() -> tempfile::TempDir {
     let source_root = data.path().join("notes");
     fs::create_dir_all(source_root.join("Cards")).expect("source directory");
     fs::write(source_root.join("Cards/note.md"), "# Source").expect("source note");
-    let config = json!({"schema_version":1,"source_note_root":source_root,"desired_retention":0.9,"scheduler":{"implementation":"fsrs-rs","version":"6.6.2","parameters":fsrs_rs::DEFAULT_PARAMETERS.iter().map(|v| f64::from(*v)).collect::<Vec<_>>()},"fuzz_enabled":false,"default_recommended_target_count":3,"queue_priority_policy_version":1});
-    let target = json!({"schema_version":1,"id":"target","topic":"Rust","scope":"Ownership","retrieval_demand":{"kind":"explain","description":"Explain ownership."},"canonical_question":"What is ownership?","correct_answer_requirements":{"rule":"Names one ownership rule."},"source_notes":["Cards/note.md"]});
-    fs::create_dir(data.path().join("targets")).expect("target directory");
+    let config = json!({"schema_version":1,"source_note_root":source_root,"desired_retention":0.9,"scheduler":{"implementation":"fsrs-rs","version":"6.6.2","parameters":fsrs_rs::DEFAULT_PARAMETERS.iter().map(|v| f64::from(*v)).collect::<Vec<_>>()},"fuzz_enabled":false,"default_recommended_target_count":3,"queue_priority_policy_version":1,"rotation_groups":{"rust":{"label":"Rust","description":"Rust studies."},"systems":{"label":"Systems","description":"Systems studies."}}});
+    let target = json!({"skill":{"objective":"Explain ownership","can":{"rule":"name one ownership rule"}},"source_notes":["Cards/note.md"]});
+    fs::create_dir_all(data.path().join("targets/rust")).expect("target directory");
     fs::write(
         data.path().join("config.yaml"),
         serde_yaml::to_string(&config).expect("config YAML"),
     )
     .expect("config");
     fs::write(
-        data.path().join("targets/target.yaml"),
+        data.path().join("targets/rust/target.yaml"),
         serde_yaml::to_string(&target).expect("target YAML"),
     )
     .expect("target");
@@ -78,17 +78,11 @@ fn write_review(data: &Path, value: &Value) -> String {
 
 fn add_successor(data: &Path) {
     let successor = json!({
-        "schema_version":1,
-        "id":"target.r2",
-        "topic":"Rust",
-        "scope":"Ownership second wording",
-        "retrieval_demand":{"kind":"explain","description":"Explain reworded ownership."},
-        "canonical_question":"What is reworded ownership?",
-        "correct_answer_requirements":{"rule":"Names one reworded ownership rule."},
+        "skill":{"objective":"Explain reworded ownership","can":{"rule":"name one reworded ownership rule"}},
         "source_notes":["Cards/note.md"]
     });
     fs::write(
-        data.join("targets/target.r2.yaml"),
+        data.join("targets/rust/target-r2.yaml"),
         serde_yaml::to_string(&successor).expect("successor YAML"),
     )
     .expect("successor target");
@@ -103,14 +97,11 @@ fn flag_study(data: &Path, id: &str, reason: &str, at: &str) -> Value {
 
 fn add_retired_target(data: &Path) {
     let retired = json!({
-        "schema_version":1,"id":"retired","topic":"Rust","scope":"Retired scope",
-        "retrieval_demand":{"kind":"explain","description":"Explain retired scope."},
-        "canonical_question":"What is retired scope?",
-        "correct_answer_requirements":{"rule":"Names one retired rule."},
+        "skill":{"objective":"Explain a retired skill","can":{"rule":"name one retired rule"}},
         "source_notes":["Cards/note.md"]
     });
     fs::write(
-        data.join("targets/retired.yaml"),
+        data.join("targets/rust/retired.yaml"),
         serde_yaml::to_string(&retired).expect("retired YAML"),
     )
     .expect("retired target");
@@ -181,12 +172,11 @@ fn unordered_target_sets_survive_activation_retirement_reload_and_unrelated_writ
     for path in ["Cards/a.md", "Cards/z.md"] {
         fs::write(data.path().join("notes").join(path), "# Source").expect("source note");
     }
-    let target_path = data.path().join("targets/target.yaml");
+    let target_path = data.path().join("targets/rust/target.yaml");
     let mut target: Value =
         serde_yaml::from_str(&fs::read_to_string(&target_path).expect("target YAML"))
             .expect("target");
     target["source_notes"] = json!(["Cards/z.md", "Cards/a.md"]);
-    target["origin_references"] = json!(["z", "a"]);
     fs::write(
         &target_path,
         serde_yaml::to_string(&target).expect("target YAML"),
@@ -209,12 +199,11 @@ fn unordered_target_sets_survive_activation_retirement_reload_and_unrelated_writ
     );
 
     add_successor(data.path());
-    let successor_path = data.path().join("targets/target.r2.yaml");
+    let successor_path = data.path().join("targets/rust/target-r2.yaml");
     let mut successor: Value =
         serde_yaml::from_str(&fs::read_to_string(&successor_path).expect("successor YAML"))
             .expect("successor");
     successor["source_notes"] = json!(["Cards/z.md", "Cards/a.md"]);
-    successor["origin_references"] = json!(["z", "a"]);
     fs::write(
         &successor_path,
         serde_yaml::to_string(&successor).expect("successor YAML"),
@@ -237,7 +226,7 @@ fn unordered_target_sets_survive_activation_retirement_reload_and_unrelated_writ
         &[
             "target",
             "activate",
-            "target.r2",
+            "target-r2",
             "--at",
             "2026-09-04T12:00:00.000Z",
         ],
@@ -425,12 +414,12 @@ fn check_aggregates_all_stale_sources_while_structural_and_repair_paths_remain_a
         ],
     );
     let mut stale_successor: Value = serde_yaml::from_str(
-        &fs::read_to_string(data.path().join("targets/target.r2.yaml")).expect("successor"),
+        &fs::read_to_string(data.path().join("targets/rust/target-r2.yaml")).expect("successor"),
     )
     .expect("successor JSON");
     stale_successor["source_notes"] = json!(["Cards/missing-successor.md"]);
     fs::write(
-        data.path().join("targets/target.r2.yaml"),
+        data.path().join("targets/rust/target-r2.yaml"),
         serde_yaml::to_string(&stale_successor).expect("successor YAML"),
     )
     .expect("stale successor");
@@ -453,7 +442,7 @@ fn check_aggregates_all_stale_sources_while_structural_and_repair_paths_remain_a
         &[
             "target",
             "activate",
-            "target.r2",
+            "target-r2",
             "--at",
             "2026-09-04T12:00:00.000Z",
         ],
@@ -498,7 +487,7 @@ fn check_aggregates_all_stale_sources_while_structural_and_repair_paths_remain_a
     stale_successor["source_notes"] = json!(["Cards/successor.md"]);
     fs::write(data.path().join("notes/Cards/successor.md"), "# Successor").expect("successor note");
     fs::write(
-        data.path().join("targets/target.r2.yaml"),
+        data.path().join("targets/rust/target-r2.yaml"),
         serde_yaml::to_string(&stale_successor).expect("successor YAML"),
     )
     .expect("repaired successor");
@@ -519,13 +508,13 @@ fn check_aggregates_all_stale_sources_while_structural_and_repair_paths_remain_a
         &[
             "target",
             "activate",
-            "target.r2",
+            "target-r2",
             "--at",
             "2026-09-04T12:03:00.000Z",
         ],
     );
     assert_eq!(
-        assert_ok(data.path(), &["target", "show", "target.r2"])["lifecycle"],
+        assert_ok(data.path(), &["target", "show", "target-r2"])["lifecycle"],
         "active"
     );
     assert_ok(data.path(), &["check"]);
@@ -559,7 +548,7 @@ fn check_aggregates_retired_syntax_and_non_retired_file_failures() {
         ],
     );
 
-    let retired_path = data.path().join("targets/retired.yaml");
+    let retired_path = data.path().join("targets/rust/retired.yaml");
     let mut retired: Value =
         serde_yaml::from_str(&fs::read_to_string(&retired_path).expect("retired target"))
             .expect("retired target YAML");
@@ -876,13 +865,12 @@ fn queue_policy_upgrade_changes_selection_without_rewriting_reviews() {
         &review(true, "initial", "2026-09-02T12:00:00.000Z"),
     );
     assert_ok(data.path(), &["review", "record", "--input", &input]);
-    let mut fresh: Value = serde_yaml::from_str(
-        &fs::read_to_string(data.path().join("targets/target.yaml")).expect("target"),
+    let fresh: Value = serde_yaml::from_str(
+        &fs::read_to_string(data.path().join("targets/rust/target.yaml")).expect("target"),
     )
     .expect("target YAML");
-    fresh["id"] = json!("fresh");
     fs::write(
-        data.path().join("targets/fresh.yaml"),
+        data.path().join("targets/rust/fresh.yaml"),
         serde_yaml::to_string(&fresh).expect("target YAML"),
     )
     .expect("fresh target");
@@ -1228,4 +1216,223 @@ fn flag_study_excludes_a_target_from_the_normal_queue_but_an_exact_target_select
         explicit_queue["recommended_targets"][0]["rank_details"]["needs_study"],
         true
     );
+}
+
+/// Writes a new draft target at `targets/<path>` with one `can` key.
+fn write_target(data: &Path, path: &str, objective: &str) {
+    let target = json!({
+        "skill": {"objective": objective, "can": {"rule": "name one ownership rule"}},
+        "source_notes": ["Cards/note.md"]
+    });
+    let path = data.join("targets").join(path);
+    fs::create_dir_all(path.parent().expect("target folder")).expect("target folder");
+    fs::write(path, serde_yaml::to_string(&target).expect("target YAML")).expect("target");
+}
+
+fn set_policy_four(data: &Path) {
+    set_queue_policy(data, 4);
+}
+
+fn queued_ids(queue: &Value) -> Vec<String> {
+    ["recommended_targets", "remaining_eligible_targets"]
+        .iter()
+        .flat_map(|key| queue[*key].as_array().expect("queue list").clone())
+        .map(|item| item["target_id"].as_str().expect("target ID").to_owned())
+        .collect()
+}
+
+#[test]
+fn moving_an_activated_target_file_keeps_its_history_and_renaming_it_fails_check() {
+    let data = setup();
+    activate(data.path());
+    let input = write_review(
+        data.path(),
+        &review(true, "session", "2026-09-02T12:00:00.000Z"),
+    );
+    assert_ok(data.path(), &["review", "record", "--input", &input]);
+
+    fs::create_dir_all(data.path().join("targets/systems/memory")).expect("new folder");
+    fs::rename(
+        data.path().join("targets/rust/target.yaml"),
+        data.path().join("targets/systems/memory/target.yaml"),
+    )
+    .expect("move target file");
+    assert_ok(data.path(), &["check"]);
+    let shown = assert_ok(data.path(), &["target", "show", "target"]);
+    assert_eq!(shown["group"], "systems/memory");
+    assert_eq!(shown["subject"], "memory");
+    assert_eq!(shown["lifecycle"], "active");
+    let history = assert_ok(data.path(), &["target", "history", "target"]);
+    assert_eq!(history["reviews"].as_array().expect("reviews").len(), 1);
+
+    fs::rename(
+        data.path().join("targets/systems/memory/target.yaml"),
+        data.path()
+            .join("targets/systems/memory/target-renamed.yaml"),
+    )
+    .expect("rename target file");
+    assert_error(data.path(), &["check"], "unknown_target_reference");
+}
+
+#[test]
+fn check_rejects_bad_target_trees_with_stable_codes() {
+    for (path, code) in [
+        ("rust/a/b/deep.yaml", "target_path_too_deep"),
+        ("root-level.yaml", "target_outside_group_folder"),
+        ("rust/notes.md", "invalid_target_filename"),
+        ("Rust/upper.yaml", "invalid_target_folder_name"),
+        ("rust/Bad_Name.yaml", "invalid_target_id"),
+        ("unconfigured/target-x.yaml", "unknown_rotation_group"),
+        ("rust/ownership/target.yaml", "duplicate_target_id"),
+    ] {
+        let data = setup();
+        let destination = data.path().join("targets").join(path);
+        fs::create_dir_all(destination.parent().expect("folder")).expect("folder");
+        fs::copy(data.path().join("targets/rust/target.yaml"), destination).expect("copy target");
+        assert_error(data.path(), &["check"], code);
+    }
+}
+
+#[test]
+fn target_list_show_and_queue_report_group_and_subject_not_topic() {
+    let data = setup();
+    write_target(data.path(), "rust/loose.yaml", "Loose target");
+    write_target(data.path(), "systems/memory/paged.yaml", "Paged target");
+    for id in ["target", "loose", "paged"] {
+        assert_ok(
+            data.path(),
+            &["target", "activate", id, "--at", "2026-09-02T12:00:00.000Z"],
+        );
+    }
+
+    let list = assert_ok(data.path(), &["target", "list"]);
+    let rows = list["targets"]
+        .as_array()
+        .expect("targets")
+        .iter()
+        .map(|row| {
+            (
+                row["id"].as_str().expect("id"),
+                row["group"].as_str().expect("group"),
+                row["subject"].as_str().expect("subject"),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        [
+            ("loose", "rust", "loose"),
+            ("paged", "systems/memory", "memory"),
+            ("target", "rust", "target"),
+        ]
+    );
+    assert!(list["targets"][0].get("topic").is_none());
+
+    let shown = assert_ok(data.path(), &["target", "show", "paged"]);
+    assert_eq!(shown["id"], "paged");
+    assert_eq!(shown["group"], "systems/memory");
+    assert_eq!(shown["subject"], "memory");
+    assert_eq!(
+        shown["definition"],
+        json!({
+            "skill": {"objective": "Paged target", "can": {"rule": "name one ownership rule"}},
+            "source_notes": ["Cards/note.md"]
+        })
+    );
+
+    let queue = assert_ok(data.path(), &["queue", "--at", "2026-09-02T13:00:00.000Z"]);
+    let item = &queue["recommended_targets"][0];
+    assert!(item["group"].is_string());
+    assert!(item["subject"].is_string());
+    assert!(item.get("topic").is_none());
+    assert_error(
+        data.path(),
+        &["queue", "--topic", "Rust"],
+        "invalid_command",
+    );
+
+    set_policy_four(data.path());
+    let queue = assert_ok(data.path(), &["queue", "--at", "2026-09-02T13:00:00.000Z"]);
+    let paged = queue["recommended_targets"]
+        .as_array()
+        .expect("recommended")
+        .iter()
+        .find(|item| item["target_id"] == "paged")
+        .expect("paged target queued");
+    assert_eq!(paged["rotation_group"]["id"], "systems");
+    assert!(paged["rank_details"]["rotation"]["subject_last_first_review"].is_null());
+}
+
+#[test]
+fn queue_group_filter_matches_whole_path_segments_and_keeps_eligibility() {
+    let data = setup();
+    write_target(data.path(), "systems/b/in-b.yaml", "In b");
+    write_target(data.path(), "systems/bc/in-bc.yaml", "In bc");
+    write_target(data.path(), "systems/b/paused-b.yaml", "Paused b");
+    write_target(data.path(), "systems/top.yaml", "Top of systems");
+    for id in ["target", "in-b", "in-bc", "paused-b", "top"] {
+        assert_ok(
+            data.path(),
+            &["target", "activate", id, "--at", "2026-09-02T12:00:00.000Z"],
+        );
+    }
+    assert_ok(
+        data.path(),
+        &[
+            "target",
+            "pause",
+            "paused-b",
+            "--reason",
+            "Not now.",
+            "--at",
+            "2026-09-02T12:01:00.000Z",
+        ],
+    );
+    let queue_for = |group: &str| {
+        queued_ids(&assert_ok(
+            data.path(),
+            &[
+                "queue",
+                "--group",
+                group,
+                "--limit",
+                "10",
+                "--at",
+                "2026-09-02T13:00:00.000Z",
+            ],
+        ))
+    };
+    assert_eq!(queue_for("systems/b"), ["in-b"]);
+    assert_eq!(queue_for("systems/bc"), ["in-bc"]);
+    assert_eq!(queue_for("systems/"), Vec::<String>::new());
+    let mut systems = queue_for("systems");
+    systems.sort();
+    assert_eq!(systems, ["in-b", "in-bc", "top"]);
+    assert_eq!(queue_for("rust"), ["target"]);
+}
+
+#[test]
+fn review_requirement_checks_must_equal_the_target_can_keys() {
+    let data = setup();
+    activate(data.path());
+    for checks in [
+        json!({}),
+        json!({"unknown": true}),
+        json!({"rule": true, "extra": true}),
+    ] {
+        let mut input = review(true, "keys", "2026-09-02T12:00:00.000Z");
+        input["assessment"]["requirement_checks"] = checks;
+        let path = write_review(data.path(), &input);
+        assert_error(
+            data.path(),
+            &["review", "record", "--input", &path],
+            "schema_validation_failed",
+        );
+    }
+    let path = write_review(
+        data.path(),
+        &review(true, "keys", "2026-09-02T12:00:00.000Z"),
+    );
+    let recorded = assert_ok(data.path(), &["review", "record", "--input", &path]);
+    assert_eq!(recorded["disposition"], "committed");
 }

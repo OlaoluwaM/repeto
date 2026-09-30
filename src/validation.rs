@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use crate::domain::{
     LifecycleState, RepetoConfiguration, RepetoEvent, RepetoReviewRecordInput,
-    RepetoTargetDefinition,
+    RepetoTargetDefinition, rotation_group_of,
 };
 
 const TARGET_SCHEMA_URN: &str = "urn:repeto:schema:v1:target";
@@ -85,13 +85,119 @@ impl fmt::Display for ValidationError {
 
 impl std::error::Error for ValidationError {}
 
-/// A target document and its source path, used for catalogue-wide checks.
+/// A target document and its path, used for catalogue-wide checks.
 #[derive(Clone, Debug)]
 pub struct TargetFile {
-    /// Path used to enforce `<target-id>.yaml` naming.
+    /// Path relative to the `targets/` directory: `<group>/<id>.yaml` or
+    /// `<group>/<subject>/<id>.yaml`.
     pub path: PathBuf,
     /// Schema-valid target JSON value.
     pub document: Value,
+}
+
+/// Where a target file sits in the `targets/` tree.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TargetLocation {
+    /// The folder path under `targets/`, such as `systems` or `systems/memory`.
+    pub group: String,
+    /// The target ID: the file name without `.yaml`.
+    pub id: String,
+}
+
+impl TargetFile {
+    /// Validates this file's path shape and returns its group and ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable error when the path is not an allowed target path.
+    pub fn location(&self) -> Result<TargetLocation, ValidationError> {
+        target_location(&self.path)
+    }
+}
+
+/// Maximum number of folders between `targets/` and a target file.
+const MAX_TARGET_FOLDER_DEPTH: usize = 2;
+
+/// Parses a path relative to `targets/` into a group and a target ID.
+///
+/// Allowed shapes are `<group>/<id>.yaml` and `<group>/<subject>/<id>.yaml`.
+/// Folder names and IDs must be lowercase words joined by single hyphens.
+///
+/// # Errors
+///
+/// Returns `invalid_target_filename` for a file without the `.yaml` extension,
+/// `target_outside_group_folder` for a file directly in `targets/`,
+/// `target_path_too_deep` for more than two folders, `invalid_target_folder_name`
+/// for a bad folder name, and `invalid_target_id` for a bad file stem.
+pub fn target_location(path: &Path) -> Result<TargetLocation, ValidationError> {
+    let components = path
+        .components()
+        .map(|component| {
+            component.as_os_str().to_str().ok_or_else(|| {
+                ValidationError::new(
+                    "invalid_target_filename",
+                    "target paths must be UTF-8",
+                    json!({ "path": path }),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let (file_name, folders) = components.split_last().ok_or_else(|| {
+        ValidationError::new(
+            "invalid_target_filename",
+            "target path is empty",
+            json!({ "path": path }),
+        )
+    })?;
+    let Some(id) = file_name.strip_suffix(".yaml") else {
+        return Err(ValidationError::new(
+            "invalid_target_filename",
+            "target catalogue files must use the .yaml extension",
+            json!({ "path": path }),
+        ));
+    };
+    if folders.is_empty() {
+        return Err(ValidationError::new(
+            "target_outside_group_folder",
+            "target files must sit in a group folder, not directly in targets/",
+            json!({ "path": path }),
+        ));
+    }
+    if folders.len() > MAX_TARGET_FOLDER_DEPTH {
+        return Err(ValidationError::new(
+            "target_path_too_deep",
+            "target files may sit at most two folders below targets/",
+            json!({ "path": path, "max_depth": MAX_TARGET_FOLDER_DEPTH }),
+        ));
+    }
+    if let Some(folder) = folders.iter().find(|folder| !is_slug(folder)) {
+        return Err(ValidationError::new(
+            "invalid_target_folder_name",
+            "target folder names must be lowercase words joined by single hyphens",
+            json!({ "path": path, "folder": folder }),
+        ));
+    }
+    if !is_slug(id) {
+        return Err(ValidationError::new(
+            "invalid_target_id",
+            "target file names must be lowercase words joined by single hyphens",
+            json!({ "path": path, "id": id }),
+        ));
+    }
+    Ok(TargetLocation {
+        group: folders.join("/"),
+        id: id.to_owned(),
+    })
+}
+
+/// Matches `^[a-z0-9]+(?:-[a-z0-9]+)*$`.
+fn is_slug(name: &str) -> bool {
+    name.split('-').all(|word| {
+        !word.is_empty()
+            && word
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    })
 }
 
 /// A validated, typed catalogue loaded from a study-data directory.
@@ -101,6 +207,8 @@ pub struct Catalogue {
     pub configuration: RepetoConfiguration,
     /// Parsed target definitions indexed by ID.
     pub targets: BTreeMap<String, RepetoTargetDefinition>,
+    /// Each target's folder path under `targets/`, indexed by ID.
+    pub target_groups: BTreeMap<String, String>,
     /// Schema-validated events in their persisted JSON representation and order.
     ///
     /// Generated event types are deliberately checked while loading but are not
@@ -257,7 +365,10 @@ impl<'de> Visitor<'de> for StrictJsonValueVisitor {
 ///
 /// Returns a stable error for an unsupported version or schema mismatch.
 pub fn validate_document(kind: SchemaKind, value: &Value) -> Result<(), ValidationError> {
-    check_schema_version(value)?;
+    // Target files carry no version field; the schema alone owns their shape.
+    if kind != SchemaKind::Target {
+        check_schema_version(value)?;
+    }
 
     // TODO(perf): compile each schema's validator once per process and reuse
     // it. Every call recompiles, and commands validate each document more than
@@ -366,30 +477,9 @@ fn load_catalogue_with_source_syntax(
     let configuration_value = load_yaml_file(&data_directory.join("config.yaml"))?;
 
     let target_directory = data_directory.join("targets");
-    let mut target_paths = fs::read_dir(&target_directory)
-        .map_err(|error| io_error(&target_directory, &error))?
-        .map(|entry| {
-            entry
-                .map(|item| item.path())
-                .map_err(|error| io_error(&target_directory, &error))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    target_paths.sort();
-
-    let mut target_files = Vec::with_capacity(target_paths.len());
-    for path in target_paths {
-        if path.extension().and_then(|extension| extension.to_str()) != Some("yaml") {
-            return Err(ValidationError::new(
-                "invalid_target_filename",
-                "target catalogue files must use the .yaml extension",
-                json!({ "path": path }),
-            ));
-        }
-        target_files.push(TargetFile {
-            document: load_yaml_file(&path)?,
-            path,
-        });
-    }
+    let mut target_files = Vec::new();
+    collect_target_files(&target_directory, Path::new(""), &mut target_files)?;
+    target_files.sort_by(|left, right| left.path.cmp(&right.path));
 
     let events = load_events(&data_directory.join("events.jsonl"))?;
     if validate_source_syntax {
@@ -400,11 +490,13 @@ fn load_catalogue_with_source_syntax(
 
     let configuration = parse_document(SchemaKind::Configuration, configuration_value)?;
     let mut targets = BTreeMap::new();
+    let mut target_groups = BTreeMap::new();
     for target_file in target_files {
-        let id = target_id(&target_file.document)?;
+        let location = target_file.location()?;
         let target: RepetoTargetDefinition =
             parse_document(SchemaKind::Target, target_file.document)?;
-        targets.insert(id, target);
+        target_groups.insert(location.id.clone(), location.group);
+        targets.insert(location.id, target);
     }
     for event in &events {
         let _: RepetoEvent = parse_document(SchemaKind::Event, event.clone())?;
@@ -413,8 +505,45 @@ fn load_catalogue_with_source_syntax(
     Ok(Catalogue {
         configuration,
         targets,
+        target_groups,
         events,
     })
+}
+
+/// Walks `targets/`, reading every target file. A path outside the allowed
+/// shapes fails before its contents are read.
+fn collect_target_files(
+    root: &Path,
+    relative: &Path,
+    files: &mut Vec<TargetFile>,
+) -> Result<(), ValidationError> {
+    let directory = root.join(relative);
+    let mut entries = fs::read_dir(&directory)
+        .map_err(|error| io_error(&directory, &error))?
+        .map(|entry| {
+            entry
+                .map_err(|error| io_error(&directory, &error))
+                .and_then(|item| {
+                    item.file_type()
+                        .map(|file_type| (item.file_name(), file_type.is_dir()))
+                        .map_err(|error| io_error(&item.path(), &error))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort();
+    for (name, is_directory) in entries {
+        let child = relative.join(name);
+        if is_directory {
+            collect_target_files(root, &child, files)?;
+        } else {
+            target_location(&child)?;
+            files.push(TargetFile {
+                document: load_yaml_file(&root.join(&child))?,
+                path: child,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Parses, validates, and returns the schema-derived review-record type.
@@ -450,61 +579,50 @@ fn validate_catalogue_without_source_syntax(
     events: &[Value],
 ) -> Result<(), ValidationError> {
     validate_document(SchemaKind::Configuration, configuration)?;
-    let rotation_topics = rotation_topic_groups(configuration)?;
+    let rotation_groups = rotation_group_ids(configuration)?;
 
     let mut targets = BTreeMap::new();
     for target_file in target_files {
         validate_document(SchemaKind::Target, &target_file.document)?;
-        let id = target_id(&target_file.document)?;
-        validate_target_filename(&target_file.path, &id)?;
-        if targets.insert(id.clone(), &target_file.document).is_some() {
+        let location = target_file.location()?;
+        let top_level = rotation_group_of(&location.group);
+        if !rotation_groups.contains(top_level) {
+            return Err(ValidationError::new(
+                "unknown_rotation_group",
+                "every target's top-level folder must be a rotation group in configuration",
+                json!({ "target_id": location.id, "folder": top_level }),
+            ));
+        }
+        if targets
+            .insert(location.id.clone(), &target_file.document)
+            .is_some()
+        {
             return Err(ValidationError::new(
                 "duplicate_target_id",
-                "target IDs must be unique",
-                json!({ "target_id": id }),
+                "target IDs must be unique across the whole targets/ tree",
+                json!({ "target_id": location.id }),
             ));
         }
     }
 
-    validate_events(events, &targets, rotation_topics.as_ref())
+    validate_events(events, &targets)
 }
 
-fn rotation_topic_groups(
-    configuration: &Value,
-) -> Result<Option<BTreeMap<String, String>>, ValidationError> {
-    if configuration["queue_priority_policy_version"] != 4 {
-        return Ok(None);
-    }
-    // typify 0.6.2 cannot generate Rust types from JSON Schema if/then.
-    // The schema owns the optional closed object shape; this semantic check
-    // enforces that policy 4 supplies a nonempty map and unique topic ownership.
-    let mut topics = BTreeMap::new();
-    let groups = configuration["rotation_groups"]
-        .as_object()
-        .ok_or_else(|| invalid_rotation_configuration("rotation_groups is missing"))?;
-    if groups.is_empty() {
+fn rotation_group_ids(configuration: &Value) -> Result<BTreeSet<String>, ValidationError> {
+    let groups = configuration
+        .get("rotation_groups")
+        .and_then(Value::as_object);
+    if configuration["queue_priority_policy_version"] == 4
+        && groups.is_none_or(serde_json::Map::is_empty)
+    {
+        // typify 0.6.2 cannot generate Rust types from JSON Schema if/then, so
+        // the schema leaves rotation_groups optional and this check requires
+        // it under policy 4.
         return Err(invalid_rotation_configuration(
             "policy 4 requires at least one rotation group",
         ));
     }
-    for (group_id, group) in groups {
-        let members = group["topics"]
-            .as_array()
-            .ok_or_else(|| invalid_rotation_configuration("rotation group has no topics"))?;
-        for topic in members {
-            let topic = topic
-                .as_str()
-                .ok_or_else(|| invalid_rotation_configuration("rotation topic is not text"))?;
-            if let Some(previous_group) = topics.insert(topic.to_owned(), group_id.to_owned()) {
-                return Err(ValidationError::new(
-                    "duplicate_rotation_topic",
-                    "a topic belongs to more than one rotation group",
-                    json!({ "topic": topic, "first_group": previous_group, "second_group": group_id }),
-                ));
-            }
-        }
-    }
-    Ok(Some(topics))
+    Ok(groups.map_or_else(BTreeSet::new, |groups| groups.keys().cloned().collect()))
 }
 
 fn invalid_rotation_configuration(message: &str) -> ValidationError {
@@ -635,7 +753,7 @@ fn validate_source_note_paths_impl(
     let canonical_root = canonical_source_note_root(&root, root_value)?;
     let mut failures = Vec::new();
     for target_file in target_files {
-        let target_id = target_id(&target_file.document)?;
+        let target_id = target_file.location()?.id;
         let source_notes = target_file
             .document
             .get("source_notes")
@@ -667,7 +785,7 @@ fn validate_source_note_paths_impl(
 fn validate_source_note_path_syntax(target_files: &[TargetFile]) -> Result<(), ValidationError> {
     let mut failures = Vec::new();
     for target_file in target_files {
-        let target_id = target_id(&target_file.document)?;
+        let target_id = target_file.location()?.id;
         let source_notes = target_file
             .document
             .get("source_notes")
@@ -812,47 +930,9 @@ fn check_schema_version(value: &Value) -> Result<(), ValidationError> {
     }
 }
 
-fn target_id(value: &Value) -> Result<String, ValidationError> {
-    value
-        .get("id")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| {
-            ValidationError::new(
-                "schema_validation_failed",
-                "target is missing an ID",
-                Value::Null,
-            )
-        })
-}
-
-fn validate_target_filename(path: &Path, id: &str) -> Result<(), ValidationError> {
-    let expected = format!("{id}.yaml");
-    let actual = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            ValidationError::new(
-                "invalid_target_filename",
-                "target path has no UTF-8 filename",
-                json!({ "path": path }),
-            )
-        })?;
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(ValidationError::new(
-            "target_filename_id_mismatch",
-            "target filename must match its ID plus .yaml",
-            json!({ "actual": actual, "expected": expected }),
-        ))
-    }
-}
-
 fn validate_events(
     events: &[Value],
     targets: &BTreeMap<String, &Value>,
-    rotation_topics: Option<&BTreeMap<String, String>>,
 ) -> Result<(), ValidationError> {
     let mut states = targets
         .keys()
@@ -885,11 +965,6 @@ fn validate_events(
             &mut reviewed_sessions,
             expected_sequence,
         )?;
-    }
-    for (target_id, state) in &states {
-        if *state == LifecycleState::Active {
-            require_rotation_topic(target_id, targets, rotation_topics)?;
-        }
     }
     Ok(())
 }
@@ -942,36 +1017,6 @@ fn validate_event_transition(
         "needs_study_flag" => flag_study_target(payload, target_id, state),
         "review_completed" => record_review(payload, target_id, state, targets, reviewed_sessions),
         _ => Err(invalid_event_payload(event_type)),
-    }
-}
-
-fn require_rotation_topic(
-    target_id: &str,
-    targets: &BTreeMap<String, &Value>,
-    rotation_topics: Option<&BTreeMap<String, String>>,
-) -> Result<(), ValidationError> {
-    let Some(rotation_topics) = rotation_topics else {
-        return Ok(());
-    };
-    let topic = targets
-        .get(target_id)
-        .and_then(|target| target.get("topic"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            ValidationError::new(
-                "unknown_target_reference",
-                "rotation target is missing",
-                json!({"target_id": target_id}),
-            )
-        })?;
-    if rotation_topics.contains_key(topic) {
-        Ok(())
-    } else {
-        Err(ValidationError::new(
-            "unmapped_active_topic",
-            "every active target topic must belong to a rotation group",
-            json!({ "target_id": target_id, "topic": topic }),
-        ))
     }
 }
 
@@ -1089,10 +1134,11 @@ fn validate_event_definition(
 
 fn canonical_target_definition(definition: &Value) -> Value {
     let mut definition = definition.clone();
-    for field in ["source_notes", "origin_references"] {
-        if let Some(values) = definition.get_mut(field).and_then(Value::as_array_mut) {
-            values.sort_by_key(Value::to_string);
-        }
+    if let Some(values) = definition
+        .get_mut("source_notes")
+        .and_then(Value::as_array_mut)
+    {
+        values.sort_by_key(Value::to_string);
     }
     definition
 }
@@ -1154,9 +1200,10 @@ fn validate_assessment_for_target(
     target: &Value,
 ) -> Result<(), ValidationError> {
     let target_requirements = target
-        .get("correct_answer_requirements")
+        .get("skill")
+        .and_then(|skill| skill.get("can"))
         .and_then(Value::as_object)
-        .ok_or_else(|| assessment_error("target requirements are not an object", Value::Null))?;
+        .ok_or_else(|| assessment_error("target skill.can is not an object", Value::Null))?;
     let checks = assessment
         .get("requirement_checks")
         .and_then(Value::as_object)
@@ -1170,7 +1217,7 @@ fn validate_assessment_for_target(
     let actual = checks.keys().collect::<BTreeSet<_>>();
     if actual != expected {
         return Err(assessment_error(
-            "assessment requirement keys must exactly match the target",
+            "assessment requirement_checks keys must exactly match the target's skill.can keys",
             json!({
                 "expected_requirement_ids": expected,
                 "actual_requirement_ids": actual,

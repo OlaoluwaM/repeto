@@ -52,7 +52,10 @@ Live data stays outside this repository:
 ├── config.yaml
 ├── events.jsonl
 └── targets/
-    └── <target-id>.yaml
+    └── <group>/
+        ├── <id>.yaml
+        └── <subject>/
+            └── <id>.yaml
 ```
 
 Configuration and targets use YAML. Events use append-only JSONL. Versioned
@@ -62,11 +65,55 @@ generated from them.
 `config.yaml` includes `source_note_root`, which may contain simple `$NAME` or
 `${NAME}` environment references. Repeto expands them without invoking a shell.
 
+### Target files
+
+A target file holds one skill and its source notes:
+
+```yaml
+skill:
+  objective: Partially apply a curried Haskell function
+  can:
+    curried-shape: read a multi-argument type as a chain of one-argument functions
+    result-type: give the type of the partially applied function and explain why
+source_notes:
+  - Cards/Currying and Partial Application.md
+```
+
+`skill.objective` is nonblank text. `skill.can` is a nonempty map from a
+lowercase kebab-case key to a nonblank statement of what the learner can do.
+`source_notes` is a nonempty, unique list of vault-relative Markdown paths,
+resolved against `source_note_root`. The schema is closed: there is no `id`,
+`schema_version`, or group field. A review's `assessment.requirement_checks`
+must have exactly the `skill.can` keys.
+
+### Target IDs and folders
+
+- A target's ID is its file name without `.yaml`. IDs are unique across the
+  whole `targets/` tree.
+- Allowed paths are `targets/<group>/<id>.yaml` and
+  `targets/<group>/<subject>/<id>.yaml`. A `.yaml` file directly in `targets/`,
+  anything deeper, and any non-`.yaml` file in the tree fail validation.
+- Folder names and IDs use lowercase words joined by single hyphens
+  (`^[a-z0-9]+(?:-[a-z0-9]+)*$`).
+- The top-level folder is the rotation group. It must be a key of
+  `rotation_groups` in `config.yaml`.
+- A target's group is its folder path (`computer-systems` or
+  `computer-systems/memory`). Its subject is the second-level folder, or its own
+  ID when it sits directly in a group folder. When such a target is later split,
+  put its replacements in a second-level folder with the same name so the subject
+  stays the same.
+- Moving a file between folders keeps its ID and history. Renaming a file makes
+  a new target, and events for an ID with no file fail `repeto check`.
+
+Validation error codes: `target_outside_group_folder`, `target_path_too_deep`,
+`invalid_target_filename`, `invalid_target_folder_name`, `invalid_target_id`,
+`duplicate_target_id`, `unknown_rotation_group`, and `unknown_target_reference`.
+
 ## Commands
 
 ```text
 repeto [--data-dir PATH] check
-repeto [--data-dir PATH] queue [--limit N] [--topic TOPIC] [--target ID]
+repeto [--data-dir PATH] queue [--limit N] [--group PATH] [--target ID]
   [--at TIMESTAMP]
 
 repeto [--data-dir PATH] target list
@@ -109,7 +156,10 @@ repeto --data-dir "$REPETO_DATA_DIR" queue \
 ```
 
 An exact active `--target ID` can select an early target or one with
-`needs_study`. Topic filters keep normal eligibility.
+`needs_study`. `--group PATH` keeps targets whose folder path equals `PATH` or
+starts with `PATH/`, so `programming/types` matches `programming/types` and
+`programming/types/inference` but not `programming/typesystems`. It keeps normal
+eligibility.
 
 Set `queue_priority_policy_version: 2` to use the agreed
 [first-review allocation](../../agent-context/Protocols/Study%20System/README.md#queue-policy).
@@ -128,39 +178,34 @@ configuration; older builds reject policy 3.
 
 Set `queue_priority_policy_version: 4` to keep policy 3's allocation and
 12-hour review hold while rotating first reviews across configured groups.
-Policy 4 requires `rotation_groups` in `config.yaml`:
+`rotation_groups` in `config.yaml` names every top-level target folder:
 
 ```yaml
 rotation_groups:
   foundations:
     label: Foundations
-    description: Core concepts studied across several topics.
-    topics:
-      - Logic
-      - Discrete Mathematics
+    description: Core concepts studied across several subjects.
   programming:
     label: Programming
-    description: Programming language and software topics.
-    topics:
-      - Rust
+    description: Programming language and software subjects.
 ```
 
 Group IDs use lowercase kebab case, at most 80 characters. The IDs
 `ambiguous`, `no-suitable-group`, `constructor`, and `prototype` are reserved
 for the grouping check's result vocabulary and JavaScript-safe interchange.
-Labels, descriptions, and exact topic names
-must be nonblank. Each group has at least one unique topic; no topic may belong
-to two groups. Every active target's topic must be mapped. Activation and resume
-fail if they would introduce an unmapped active topic.
+Labels and descriptions must be nonblank. Configuration has no topic lists: the
+folder tree is the map. Every target's top-level folder must be a configured
+group, under every queue policy.
 Paused and retired targets retain their history, and their past first reviews
-still count when their topics remain mapped.
+still count.
 
 First-review groups with no completed first review come first, followed by the
 least recently first-reviewed group. Event timestamps order history, with event
-sequence resolving a tie. Within a group the same rule orders topics, then
-target IDs. Multiple first slots cycle through eligible groups and topics
-before reusing one. Queue reads do not advance a stored cursor; only a completed
-first review changes historical recency.
+sequence resolving a tie. Within a group the same rule orders subjects, then
+target IDs. A subject is named within its group, so equal subject names in
+different groups do not interact. Multiple first slots cycle through eligible
+groups and subjects before reusing one. Queue reads do not advance a stored
+cursor; only a completed first review changes historical recency.
 
 The highest-ranked due target always keeps its place when a due slot exists.
 For later due slots, a group absent from the selected first and due targets is
@@ -168,9 +213,10 @@ preferred only within the same retrievability band and calibration-priority
 bucket. Exact retrievability and ID break ties after that preference. Due
 targets precede first reviews in the output. Every policy-4 ranked target adds
 `rotation_group: {id, label}` and `rank_details.rotation`, which contains
-`group_last_first_review`, `topic_last_first_review` (each a millisecond UTC
+`group_last_first_review`, `subject_last_first_review` (each a millisecond UTC
 `occurred_at` and event `sequence`, or `null`), and `diversity_preferred`.
-Policies 1–3 omit these fields.
+Policies 1–3 omit these fields. Every queue item, `target list` row, and
+`target show` result reports `group` (the folder path) and `subject`.
 
 Inspect one target before a prompt:
 
@@ -206,8 +252,10 @@ unflag command: the flag is cleared only by a later `correct` review.
 ## Target changes
 
 Active definitions are immutable. To change a target, run `target retire` with
-a reason, then prepare a new target file and run `target activate` on it. The
-new target starts with no review history.
+a reason, then prepare a new target file with a new ID (file name) and run
+`target activate` on it. The new target starts with no review history. The
+activation event stores the parsed file content (`skill` and `source_notes`),
+which must match the file exactly; the folder is not part of it.
 
 ## Determinism
 

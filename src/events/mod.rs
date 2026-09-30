@@ -315,7 +315,8 @@ fn validate_stored_result(catalogue: &Catalogue, event: &Value) -> Result<(), Ev
         .get(target_id)
         .ok_or_else(|| malformed_event("review target is missing"))?;
     let requirements = target
-        .correct_answer_requirements
+        .skill
+        .can
         .iter()
         .map(|(id, description)| (id.to_string(), description.to_string()))
         .collect();
@@ -760,8 +761,12 @@ fn validate_candidate(
         .targets
         .iter()
         .map(|(id, definition)| {
+            let group = catalogue
+                .target_groups
+                .get(id)
+                .ok_or_else(|| malformed_event("target has no group"))?;
             Ok(crate::validation::TargetFile {
-                path: PathBuf::from(format!("{id}.yaml")),
+                path: PathBuf::from(format!("{group}/{id}.yaml")),
                 document: serde_json::to_value(definition)
                     .map_err(|error| serialization_error(&error))?,
             })
