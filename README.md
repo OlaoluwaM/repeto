@@ -72,19 +72,22 @@ A target file holds one skill and its source notes:
 ```yaml
 skill:
   objective: Partially apply a curried Haskell function
-  can:
-    curried-shape: read a multi-argument type as a chain of one-argument functions
+  criteria:
+    curried-shape: say how a multi-argument function type reads under currying
     result-type: give the type of the partially applied function and explain why
 source_notes:
   - Cards/Currying and Partial Application.md
 ```
 
-`skill.objective` is nonblank text. `skill.can` is a nonempty map from a
-lowercase kebab-case key to a nonblank statement of what the learner can do.
+`skill.objective` is nonblank text. `skill.criteria` is a nonempty map from a
+lowercase kebab-case key to a nonblank success criterion. A criterion names
+what a correct answer must address. It does not state the answer. Start it with
+an observable verb such as give, say which, decide, work out, explain how or
+why, trace, or derive. Never write "understand" or "know".
 `source_notes` is a nonempty, unique list of vault-relative Markdown paths,
 resolved against `source_note_root`. The schema is closed: there is no `id`,
-`schema_version`, or group field. A review's `assessment.requirement_checks`
-must have exactly the `skill.can` keys.
+`schema_version`, or group field. A review's `assessment.criteria_checks`
+must have exactly the `skill.criteria` keys.
 
 ### Target IDs and folders
 
@@ -253,7 +256,7 @@ alongside `prompt`, `answer`, `grading_explanation`, and
 "metadata": {
   "prompt": "What does an immutable borrow permit in Rust?",
   "answer": "It permits reads without transferring ownership.",
-  "grading_explanation": "The answer covers the correct-answer requirement.",
+  "grading_explanation": "The answer covers every criterion.",
   "verification_sources": ["https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html"],
   "difficulty": 2,
   "source_note_issues": ["The note does not say that mutable borrows are exclusive."]

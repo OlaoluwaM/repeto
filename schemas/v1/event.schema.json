@@ -115,11 +115,11 @@
       "title": "EventAssessment",
       "type": "object",
       "additionalProperties": false,
-      "required": ["answer_submitted", "target_knowledge_supplied_before_answer", "requirement_checks"],
+      "required": ["answer_submitted", "target_knowledge_supplied_before_answer", "criteria_checks"],
       "properties": {
         "answer_submitted": { "type": "boolean" },
         "target_knowledge_supplied_before_answer": { "type": "boolean" },
-        "requirement_checks": {
+        "criteria_checks": {
           "type": "object",
           "minProperties": 1,
           "propertyNames": { "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$" },

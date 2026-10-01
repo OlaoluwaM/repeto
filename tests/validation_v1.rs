@@ -47,23 +47,23 @@ fn assessment_keys_must_equal_target_keys_and_no_answer_checks_are_false() {
     let target = target();
     let mut review = parse_json(include_str!("fixtures/valid/review-record-input.json")).unwrap();
 
-    review["assessment"]["requirement_checks"] = json!({ "unknown": true });
+    review["assessment"]["criteria_checks"] = json!({ "unknown": true });
     let error = validate_review_input_for_target(&review, &target).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 
-    // Missing a `can` key, and carrying an extra key beside a valid one, both fail.
-    review["assessment"]["requirement_checks"] = json!({});
+    // Missing a `criteria` key, and carrying an extra key beside a valid one, both fail.
+    review["assessment"]["criteria_checks"] = json!({});
     let error = validate_review_input_for_target(&review, &target).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
-    review["assessment"]["requirement_checks"] = json!({ "read-access": true, "extra": true });
+    review["assessment"]["criteria_checks"] = json!({ "read-access": true, "extra": true });
     let error = validate_review_input_for_target(&review, &target).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
     assert_eq!(
-        error.details["expected_requirement_ids"],
+        error.details["expected_criterion_ids"],
         json!(["read-access"])
     );
 
-    review["assessment"]["requirement_checks"] = json!({ "read-access": true });
+    review["assessment"]["criteria_checks"] = json!({ "read-access": true });
     review["assessment"]["answer_submitted"] = json!(false);
     review.as_object_mut().unwrap().remove("confidence");
     review["metadata"].as_object_mut().unwrap().remove("answer");

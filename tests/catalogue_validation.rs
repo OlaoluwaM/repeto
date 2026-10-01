@@ -188,7 +188,7 @@ fn review_event(sequence: u64, target_id: &str, session_id: &str) -> Value {
             "assessment": {
                 "answer_submitted": true,
                 "target_knowledge_supplied_before_answer": false,
-                "requirement_checks": { "read-access": true }
+                "criteria_checks": { "read-access": true }
             },
             "confidence": "sure",
             "metadata": {

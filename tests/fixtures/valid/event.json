@@ -8,8 +8,8 @@
     "definition": {
       "skill": {
         "objective": "Explain what an immutable borrow permits in Rust",
-        "can": {
-          "read-access": "state that it grants read access without transferring ownership"
+        "criteria": {
+          "read-access": "say what access an immutable borrow grants and whether ownership moves"
         }
       },
       "source_notes": [

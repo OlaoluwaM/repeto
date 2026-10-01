@@ -314,9 +314,9 @@ fn validate_stored_result(catalogue: &Catalogue, event: &Value) -> Result<(), Ev
         .targets
         .get(target_id)
         .ok_or_else(|| malformed_event("review target is missing"))?;
-    let requirements = target
+    let criteria = target
         .skill
-        .can
+        .criteria
         .iter()
         .map(|(id, description)| (id.to_string(), description.to_string()))
         .collect();
@@ -328,11 +328,11 @@ fn validate_stored_result(catalogue: &Catalogue, event: &Value) -> Result<(), Ev
         .ok_or_else(|| malformed_event("review has no assessment"))?;
     let checks = serde_json::from_value(
         assessment
-            .get("requirement_checks")
+            .get("criteria_checks")
             .cloned()
-            .ok_or_else(|| malformed_event("review has no requirement checks"))?,
+            .ok_or_else(|| malformed_event("review has no criteria checks"))?,
     )
-    .map_err(|_| malformed_event("review requirement checks are invalid"))?;
+    .map_err(|_| malformed_event("review criteria checks are invalid"))?;
     let assessment = Assessment::new(
         assessment
             .get("answer_submitted")
@@ -344,8 +344,8 @@ fn validate_stored_result(catalogue: &Catalogue, event: &Value) -> Result<(), Ev
             .ok_or_else(|| malformed_event("review has no assistance flag"))?,
         checks,
     );
-    let expected = match derive_result(&requirements, &assessment)
-        .map_err(|_| malformed_event("review requirements do not match target"))?
+    let expected = match derive_result(&criteria, &assessment)
+        .map_err(|_| malformed_event("review criteria do not match target"))?
     {
         AssessmentResult::Correct => "correct",
         AssessmentResult::NotCorrect => "not_correct",

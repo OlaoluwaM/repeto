@@ -448,7 +448,7 @@ fn derive_review_result(
         .ok_or_else(|| unknown_target(target_id))?;
     let expected = definition
         .skill
-        .can
+        .criteria
         .iter()
         .map(|(id, description)| (id.to_string(), description.to_string()))
         .collect::<BTreeMap<_, _>>();
@@ -481,12 +481,12 @@ fn derive_review_result(
         })?;
     let checks: BTreeMap<String, bool> = serde_json::from_value(
         assessment_value
-            .get("requirement_checks")
+            .get("criteria_checks")
             .cloned()
             .ok_or_else(|| {
                 CliError::new(
                     "invalid_review_input",
-                    "assessment has no requirement checks",
+                    "assessment has no criteria checks",
                     Value::Null,
                 )
             })?,
@@ -494,7 +494,7 @@ fn derive_review_result(
     .map_err(|error| {
         CliError::new(
             "invalid_review_input",
-            "requirement checks are invalid",
+            "criteria checks are invalid",
             json!({ "error": error.to_string() }),
         )
     })?;
@@ -506,8 +506,8 @@ fn derive_review_result(
         Ok(AssessmentResult::NotCorrect) => Ok("not_correct".to_owned()),
         Err(error) => Err(CliError::new(
             error.code(),
-            "assessment requirement keys do not match the target",
-            json!({ "requirement_id": error.requirement_id() }),
+            "assessment criterion keys do not match the target",
+            json!({ "criterion_id": error.criterion_id() }),
         )),
     }
 }

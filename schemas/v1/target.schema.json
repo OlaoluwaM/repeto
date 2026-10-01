@@ -9,10 +9,11 @@
     "skill": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["objective", "can"],
+      "required": ["objective", "criteria"],
       "properties": {
         "objective": { "$ref": "#/$defs/NonBlankString" },
-        "can": {
+        "criteria": {
+          "description": "Success criteria for the skill. Each entry is a success criterion that names what a correct answer must address and does not state the answer.",
           "type": "object",
           "minProperties": 1,
           "propertyNames": { "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$" },

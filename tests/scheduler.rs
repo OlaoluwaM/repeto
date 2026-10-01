@@ -30,7 +30,7 @@ fn time() -> DateTime<Utc> {
 fn payload(result: &str, scheduling: &serde_json::Value) -> serde_json::Value {
     json!({
         "session_id":"session",
-        "assessment":{"answer_submitted":true,"target_knowledge_supplied_before_answer":false,"requirement_checks":{"rule":result == "correct"}},
+        "assessment":{"answer_submitted":true,"target_knowledge_supplied_before_answer":false,"criteria_checks":{"rule":result == "correct"}},
         "confidence":"sure",
         "metadata":{"prompt":"Prompt","answer":"Answer","grading_explanation":"Grade","verification_sources":["source"],"difficulty":3,"source_note_issues":[]},
         "assessment_policy_id":"repeto-analytic-conjunctive-v1",
@@ -57,7 +57,7 @@ fn stores_one_closed_f32_canonical_scheduling_object() {
     );
     assert!(scheduling.get("next_due_at").is_none());
     assert!(scheduling.get("fsrs_rating").is_none());
-    let payload = json!({"session_id":"session","assessment":{"answer_submitted":true,"target_knowledge_supplied_before_answer":false,"requirement_checks":{"rule":true}},"confidence":"sure","metadata":{"prompt":"Prompt","answer":"Answer","grading_explanation":"Correct","verification_sources":["source"],"difficulty":3,"source_note_issues":[]},"assessment_policy_id":"repeto-analytic-conjunctive-v1","result":"correct","scheduling":scheduling});
+    let payload = json!({"session_id":"session","assessment":{"answer_submitted":true,"target_knowledge_supplied_before_answer":false,"criteria_checks":{"rule":true}},"confidence":"sure","metadata":{"prompt":"Prompt","answer":"Answer","grading_explanation":"Correct","verification_sources":["source"],"difficulty":3,"source_note_issues":[]},"assessment_policy_id":"repeto-analytic-conjunctive-v1","result":"correct","scheduling":scheduling});
     Scheduler::from_configuration(&configuration())
         .expect("scheduler")
         .validate_stored_review(time(), &payload)
@@ -78,7 +78,7 @@ fn maps_not_correct_to_again_and_rejects_tampered_exact_bits() {
     assert_eq!(scheduling["input"]["rating"], "Again");
     let mut payload = json!({
         "session_id":"session",
-        "assessment":{"answer_submitted":true,"target_knowledge_supplied_before_answer":false,"requirement_checks":{"rule":false}},
+        "assessment":{"answer_submitted":true,"target_knowledge_supplied_before_answer":false,"criteria_checks":{"rule":false}},
         "confidence":"sure",
         "metadata":{"prompt":"Prompt","answer":"Answer","grading_explanation":"Incorrect","verification_sources":["source"],"difficulty":3,"source_note_issues":[]},
         "assessment_policy_id":"repeto-analytic-conjunctive-v1",

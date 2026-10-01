@@ -15,7 +15,7 @@ fn target() -> Value {
     json!({
         "skill": {
             "objective": "Explain ownership",
-            "can": {"rule": "name one ownership rule"}
+            "criteria": {"rule": "name one ownership rule"}
         },
         "source_notes": ["Cards/note.md"]
     })

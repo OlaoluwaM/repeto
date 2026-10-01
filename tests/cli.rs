@@ -41,7 +41,7 @@ fn setup() -> tempfile::TempDir {
     fs::create_dir_all(source_root.join("Cards")).expect("source directory");
     fs::write(source_root.join("Cards/note.md"), "# Source").expect("source note");
     let config = json!({"schema_version":1,"source_note_root":source_root,"desired_retention":0.9,"scheduler":{"implementation":"fsrs-rs","version":"6.6.2","parameters":fsrs_rs::DEFAULT_PARAMETERS.iter().map(|v| f64::from(*v)).collect::<Vec<_>>()},"fuzz_enabled":false,"default_recommended_target_count":3,"queue_priority_policy_version":1,"rotation_groups":{"rust":{"label":"Rust","description":"Rust studies."},"systems":{"label":"Systems","description":"Systems studies."}}});
-    let target = json!({"skill":{"objective":"Explain ownership","can":{"rule":"name one ownership rule"}},"source_notes":["Cards/note.md"]});
+    let target = json!({"skill":{"objective":"Explain ownership","criteria":{"rule":"name one ownership rule"}},"source_notes":["Cards/note.md"]});
     fs::create_dir_all(data.path().join("targets/rust")).expect("target directory");
     fs::write(
         data.path().join("config.yaml"),
@@ -57,7 +57,7 @@ fn setup() -> tempfile::TempDir {
     data
 }
 fn review(answer: bool, session: &str, occurred_at: &str) -> Value {
-    json!({"schema_version":1,"target_id":"target","session_id":session,"occurred_at":occurred_at,"assessment":{"answer_submitted":true,"target_knowledge_supplied_before_answer":false,"requirement_checks":{"rule":answer}},"confidence":"sure","metadata":{"prompt":"What is ownership?","answer":"A rule.","grading_explanation":"Graded.","verification_sources":["source-b","source-a"],"difficulty":3,"source_note_issues":["Note omits the move rule."]}})
+    json!({"schema_version":1,"target_id":"target","session_id":session,"occurred_at":occurred_at,"assessment":{"answer_submitted":true,"target_knowledge_supplied_before_answer":false,"criteria_checks":{"rule":answer}},"confidence":"sure","metadata":{"prompt":"What is ownership?","answer":"A rule.","grading_explanation":"Graded.","verification_sources":["source-b","source-a"],"difficulty":3,"source_note_issues":["Note omits the move rule."]}})
 }
 fn activate(data: &Path) {
     assert_ok(
@@ -79,7 +79,7 @@ fn write_review(data: &Path, value: &Value) -> String {
 
 fn add_successor(data: &Path) {
     let successor = json!({
-        "skill":{"objective":"Explain reworded ownership","can":{"rule":"name one reworded ownership rule"}},
+        "skill":{"objective":"Explain reworded ownership","criteria":{"rule":"name one reworded ownership rule"}},
         "source_notes":["Cards/note.md"]
     });
     fs::write(
@@ -98,7 +98,7 @@ fn flag_study(data: &Path, id: &str, reason: &str, at: &str) -> Value {
 
 fn add_retired_target(data: &Path) {
     let retired = json!({
-        "skill":{"objective":"Explain a retired skill","can":{"rule":"name one retired rule"}},
+        "skill":{"objective":"Explain a retired skill","criteria":{"rule":"name one retired rule"}},
         "source_notes":["Cards/note.md"]
     });
     fs::write(
@@ -240,7 +240,7 @@ fn unordered_target_sets_survive_activation_retirement_reload_and_unrelated_writ
 fn changed_review_identity_input_conflicts_and_no_answer_violations_use_schema_error() {
     let changes: [fn(&mut Value); 6] = [
         |value: &mut Value| value["occurred_at"] = json!("2026-09-03T12:00:00.000Z"),
-        |value: &mut Value| value["assessment"]["requirement_checks"]["rule"] = json!(false),
+        |value: &mut Value| value["assessment"]["criteria_checks"]["rule"] = json!(false),
         |value: &mut Value| value["confidence"] = json!("guessing"),
         |value: &mut Value| value["metadata"]["answer"] = json!("Different answer."),
         |value: &mut Value| value["metadata"]["difficulty"] = json!(4),
@@ -293,7 +293,7 @@ fn changed_review_identity_input_conflicts_and_no_answer_violations_use_schema_e
     assert_ok(data.path(), &["review", "record", "--input", &path]);
     let mut no_answer = review(false, "other", "2026-09-03T12:00:00.000Z");
     no_answer["assessment"]["answer_submitted"] = json!(false);
-    no_answer["assessment"]["requirement_checks"]["rule"] = json!(true);
+    no_answer["assessment"]["criteria_checks"]["rule"] = json!(true);
     no_answer["metadata"]
         .as_object_mut()
         .expect("metadata")
@@ -1221,10 +1221,10 @@ fn flag_study_excludes_a_target_from_the_normal_queue_but_an_exact_target_select
     );
 }
 
-/// Writes a new draft target at `targets/<path>` with one `can` key.
+/// Writes a new draft target at `targets/<path>` with one `criteria` key.
 fn write_target(data: &Path, path: &str, objective: &str) {
     let target = json!({
-        "skill": {"objective": objective, "can": {"rule": "name one ownership rule"}},
+        "skill": {"objective": objective, "criteria": {"rule": "name one ownership rule"}},
         "source_notes": ["Cards/note.md"]
     });
     let path = data.join("targets").join(path);
@@ -1338,7 +1338,7 @@ fn target_list_show_and_queue_report_group_and_subject_not_topic() {
     assert_eq!(
         shown["definition"],
         json!({
-            "skill": {"objective": "Paged target", "can": {"rule": "name one ownership rule"}},
+            "skill": {"objective": "Paged target", "criteria": {"rule": "name one ownership rule"}},
             "source_notes": ["Cards/note.md"]
         })
     );
@@ -1415,7 +1415,7 @@ fn queue_group_filter_matches_whole_path_segments_and_keeps_eligibility() {
 }
 
 #[test]
-fn review_requirement_checks_must_equal_the_target_can_keys() {
+fn review_criteria_checks_must_equal_the_target_criteria_keys() {
     let data = setup();
     activate(data.path());
     for checks in [
@@ -1424,7 +1424,7 @@ fn review_requirement_checks_must_equal_the_target_can_keys() {
         json!({"rule": true, "extra": true}),
     ] {
         let mut input = review(true, "keys", "2026-09-02T12:00:00.000Z");
-        input["assessment"]["requirement_checks"] = checks;
+        input["assessment"]["criteria_checks"] = checks;
         let path = write_review(data.path(), &input);
         assert_error(
             data.path(),

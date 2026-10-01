@@ -1181,8 +1181,8 @@ fn validate_review_payload(
 /// # Errors
 ///
 /// Returns `schema_validation_failed` when the assessment does not describe
-/// exactly the target's requirements or a no-answer assessment records a met
-/// requirement.
+/// exactly the target's criteria or a no-answer assessment records a met
+/// criterion.
 pub fn validate_review_input_for_target(
     review_input: &Value,
     target: &Value,
@@ -1203,28 +1203,25 @@ fn validate_assessment_for_target(
     assessment: &Value,
     target: &Value,
 ) -> Result<(), ValidationError> {
-    let target_requirements = target
+    let target_criteria = target
         .get("skill")
-        .and_then(|skill| skill.get("can"))
+        .and_then(|skill| skill.get("criteria"))
         .and_then(Value::as_object)
-        .ok_or_else(|| assessment_error("target skill.can is not an object", Value::Null))?;
+        .ok_or_else(|| assessment_error("target skill.criteria is not an object", Value::Null))?;
     let checks = assessment
-        .get("requirement_checks")
+        .get("criteria_checks")
         .and_then(Value::as_object)
         .ok_or_else(|| {
-            assessment_error(
-                "assessment requirement checks are not an object",
-                Value::Null,
-            )
+            assessment_error("assessment criteria checks are not an object", Value::Null)
         })?;
-    let expected = target_requirements.keys().collect::<BTreeSet<_>>();
+    let expected = target_criteria.keys().collect::<BTreeSet<_>>();
     let actual = checks.keys().collect::<BTreeSet<_>>();
     if actual != expected {
         return Err(assessment_error(
-            "assessment requirement_checks keys must exactly match the target's skill.can keys",
+            "assessment criteria_checks keys must exactly match the target's skill.criteria keys",
             json!({
-                "expected_requirement_ids": expected,
-                "actual_requirement_ids": actual,
+                "expected_criterion_ids": expected,
+                "actual_criterion_ids": actual,
             }),
         ));
     }
@@ -1232,7 +1229,7 @@ fn validate_assessment_for_target(
         && checks.values().any(|value| value == &Value::Bool(true))
     {
         return Err(assessment_error(
-            "a no-answer assessment must mark every requirement false",
+            "a no-answer assessment must mark every criterion false",
             Value::Null,
         ));
     }

@@ -59,7 +59,7 @@ fn target_schema_is_closed_and_rejects_removed_fields() {
     let error = validate_document(SchemaKind::Target, &target).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 
-    let target = yaml_fixture(include_str!("fixtures/invalid/target-empty-can.yaml"));
+    let target = yaml_fixture(include_str!("fixtures/invalid/target-empty-criteria.yaml"));
     let error = validate_document(SchemaKind::Target, &target).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 }
@@ -80,7 +80,7 @@ fn source_notes_must_be_nonempty_and_present() {
 #[test]
 fn skill_can_must_be_nonempty_and_use_stable_keys() {
     let mut target = yaml_fixture(include_str!("fixtures/valid/targets/rust/rust-borrow.yaml"));
-    target["skill"]["can"] = json!({});
+    target["skill"]["criteria"] = json!({});
     let error = validate_document(SchemaKind::Target, &target).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 
@@ -92,16 +92,17 @@ fn skill_can_must_be_nonempty_and_use_stable_keys() {
         "read--access",
         "1read",
     ] {
-        target["skill"]["can"] = json!({ key: "Valid text." });
+        target["skill"]["criteria"] = json!({ key: "Valid text." });
         let error = validate_document(SchemaKind::Target, &target).unwrap_err();
         assert_eq!(error.code, "schema_validation_failed", "key {key}");
     }
 
-    target["skill"]["can"] = json!({ "read-access": "   " });
+    target["skill"]["criteria"] = json!({ "read-access": "   " });
     let error = validate_document(SchemaKind::Target, &target).unwrap_err();
     assert_eq!(error.code, "schema_validation_failed");
 
-    target["skill"]["can"] = json!({ "read-access": "Valid text.", "step2-check": "Valid text." });
+    target["skill"]["criteria"] =
+        json!({ "read-access": "Valid text.", "step2-check": "Valid text." });
     validate_document(SchemaKind::Target, &target).unwrap();
 }
 
@@ -175,7 +176,7 @@ fn review_input_requires_canonical_timestamps_and_conditional_fields() {
 
     let mut no_answer = json_fixture(include_str!("fixtures/valid/review-record-input.json"));
     no_answer["assessment"]["answer_submitted"] = json!(false);
-    no_answer["assessment"]["requirement_checks"]["read-access"] = json!(false);
+    no_answer["assessment"]["criteria_checks"]["read-access"] = json!(false);
     no_answer.as_object_mut().unwrap().remove("confidence");
     no_answer["metadata"]
         .as_object_mut()

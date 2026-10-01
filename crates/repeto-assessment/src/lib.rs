@@ -1,7 +1,7 @@
 //! Pure assessment policy for Repeto review answers.
 //!
 //! This crate deliberately has no knowledge of scheduling, persistence, or
-//! review metadata. It validates the keyed requirement checks supplied by the
+//! review metadata. It validates the keyed criteria checks supplied by the
 //! caller and applies the `repeto-analytic-conjunctive-v1` result rule.
 //!
 //! The caller must reject duplicate object names before constructing the
@@ -17,9 +17,9 @@ pub const POLICY_ID: &str = "repeto-analytic-conjunctive-v1";
 /// The result derived by the assessment policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AssessmentResult {
-    /// An independent answer met every expected requirement.
+    /// An independent answer met every expected criterion.
     Correct,
-    /// The answer was missing, assisted, or failed at least one requirement.
+    /// The answer was missing, assisted, or failed at least one criterion.
     NotCorrect,
 }
 
@@ -30,12 +30,12 @@ pub struct Assessment {
     pub answer_submitted: bool,
     /// Whether target knowledge was supplied before that answer.
     pub target_knowledge_supplied_before_answer: bool,
-    /// The grader's Boolean check for each answer requirement.
+    /// The grader's Boolean check for each answer criterion.
     ///
-    /// Requirement keys are unique by map construction. A caller that parses
+    /// Criterion keys are unique by map construction. A caller that parses
     /// an input format which permits duplicate object names must reject those
     /// names before constructing this map.
-    pub requirement_checks: BTreeMap<String, bool>,
+    pub criteria_checks: BTreeMap<String, bool>,
 }
 
 impl Assessment {
@@ -44,25 +44,25 @@ impl Assessment {
     pub fn new(
         answer_submitted: bool,
         target_knowledge_supplied_before_answer: bool,
-        requirement_checks: BTreeMap<String, bool>,
+        criteria_checks: BTreeMap<String, bool>,
     ) -> Self {
         Self {
             answer_submitted,
             target_knowledge_supplied_before_answer,
-            requirement_checks,
+            criteria_checks,
         }
     }
 }
 
-/// A stable validation error for inconsistent requirement maps.
+/// A stable validation error for inconsistent criteria maps.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AssessmentError {
-    /// The target defined no expected requirements.
-    EmptyExpectedRequirements,
-    /// An expected requirement has no submitted check.
-    MissingRequirementId { requirement_id: String },
-    /// A submitted requirement ID is not in the expected set.
-    UnknownRequirementId { requirement_id: String },
+    /// The target defined no expected criteria.
+    EmptyExpectedCriteria,
+    /// An expected criterion has no submitted check.
+    MissingCriterionId { criterion_id: String },
+    /// A submitted criterion ID is not in the expected set.
+    UnknownCriterionId { criterion_id: String },
 }
 
 impl AssessmentError {
@@ -70,19 +70,19 @@ impl AssessmentError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::EmptyExpectedRequirements => "empty_expected_requirements",
-            Self::MissingRequirementId { .. } => "missing_requirement_id",
-            Self::UnknownRequirementId { .. } => "unknown_requirement_id",
+            Self::EmptyExpectedCriteria => "empty_expected_criteria",
+            Self::MissingCriterionId { .. } => "missing_criterion_id",
+            Self::UnknownCriterionId { .. } => "unknown_criterion_id",
         }
     }
 
-    /// Returns the requirement ID involved in this error, when there is one.
+    /// Returns the criterion ID involved in this error, when there is one.
     #[must_use]
-    pub fn requirement_id(&self) -> Option<&str> {
+    pub fn criterion_id(&self) -> Option<&str> {
         match self {
-            Self::EmptyExpectedRequirements => None,
-            Self::MissingRequirementId { requirement_id }
-            | Self::UnknownRequirementId { requirement_id } => Some(requirement_id),
+            Self::EmptyExpectedCriteria => None,
+            Self::MissingCriterionId { criterion_id }
+            | Self::UnknownCriterionId { criterion_id } => Some(criterion_id),
         }
     }
 }
@@ -90,14 +90,10 @@ impl AssessmentError {
 impl fmt::Display for AssessmentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyExpectedRequirements => formatter.write_str(self.code()),
-            Self::MissingRequirementId { requirement_id }
-            | Self::UnknownRequirementId { requirement_id } => {
-                write!(
-                    formatter,
-                    "{}: requirement ID `{requirement_id}`",
-                    self.code()
-                )
+            Self::EmptyExpectedCriteria => formatter.write_str(self.code()),
+            Self::MissingCriterionId { criterion_id }
+            | Self::UnknownCriterionId { criterion_id } => {
+                write!(formatter, "{}: criterion ID `{criterion_id}`", self.code())
             }
         }
     }
@@ -105,9 +101,9 @@ impl fmt::Display for AssessmentError {
 
 impl std::error::Error for AssessmentError {}
 
-/// Validates keyed requirement checks and derives the policy result.
+/// Validates keyed criteria checks and derives the policy result.
 ///
-/// `expected_requirements` is the target's map from requirement IDs to their
+/// `expected_criteria` is the target's map from criterion IDs to their
 /// descriptions. The descriptions are intentionally opaque to this crate:
 /// only the keys participate in policy validation. Both maps are ordered so
 /// input order cannot affect validation or the result.
@@ -135,38 +131,38 @@ impl std::error::Error for AssessmentError {}
 ///
 /// # Errors
 ///
-/// Returns [`AssessmentError`] when the target has no expected requirements or
-/// when the requirement-check keys do not exactly match the expected keys.
+/// Returns [`AssessmentError`] when the target has no expected criteria or
+/// when the criteria-check keys do not exactly match the expected keys.
 pub fn derive_result(
-    expected_requirements: &BTreeMap<String, String>,
+    expected_criteria: &BTreeMap<String, String>,
     assessment: &Assessment,
 ) -> Result<AssessmentResult, AssessmentError> {
-    if expected_requirements.is_empty() {
-        return Err(AssessmentError::EmptyExpectedRequirements);
+    if expected_criteria.is_empty() {
+        return Err(AssessmentError::EmptyExpectedCriteria);
     }
 
-    if let Some(requirement_id) = assessment
-        .requirement_checks
+    if let Some(criterion_id) = assessment
+        .criteria_checks
         .keys()
-        .find(|requirement_id| !expected_requirements.contains_key(*requirement_id))
+        .find(|criterion_id| !expected_criteria.contains_key(*criterion_id))
     {
-        return Err(AssessmentError::UnknownRequirementId {
-            requirement_id: requirement_id.clone(),
+        return Err(AssessmentError::UnknownCriterionId {
+            criterion_id: criterion_id.clone(),
         });
     }
 
-    if let Some(requirement_id) = expected_requirements
+    if let Some(criterion_id) = expected_criteria
         .keys()
-        .find(|requirement_id| !assessment.requirement_checks.contains_key(*requirement_id))
+        .find(|criterion_id| !assessment.criteria_checks.contains_key(*criterion_id))
     {
-        return Err(AssessmentError::MissingRequirementId {
-            requirement_id: requirement_id.clone(),
+        return Err(AssessmentError::MissingCriterionId {
+            criterion_id: criterion_id.clone(),
         });
     }
 
     let correct = assessment.answer_submitted
         && !assessment.target_knowledge_supplied_before_answer
-        && assessment.requirement_checks.values().all(|met| *met);
+        && assessment.criteria_checks.values().all(|met| *met);
 
     Ok(if correct {
         AssessmentResult::Correct
@@ -179,9 +175,9 @@ pub fn derive_result(
 mod tests {
     use super::*;
 
-    fn requirements(ids: &[&str]) -> BTreeMap<String, String> {
+    fn criteria(ids: &[&str]) -> BTreeMap<String, String> {
         ids.iter()
-            .map(|id| ((*id).to_owned(), format!("requirement {id}")))
+            .map(|id| ((*id).to_owned(), format!("criterion {id}")))
             .collect()
     }
 
@@ -195,12 +191,12 @@ mod tests {
     fn assessment(
         answer_submitted: bool,
         target_knowledge_supplied_before_answer: bool,
-        requirement_checks: &[(&str, bool)],
+        criteria_checks: &[(&str, bool)],
     ) -> Assessment {
         Assessment::new(
             answer_submitted,
             target_knowledge_supplied_before_answer,
-            checks(requirement_checks),
+            checks(criteria_checks),
         )
     }
 
@@ -211,7 +207,7 @@ mod tests {
 
     #[test]
     fn covers_the_complete_truth_table() {
-        let expected = requirements(&["mechanism"]);
+        let expected = criteria(&["mechanism"]);
         for answer_submitted in [false, true] {
             for assisted in [false, true] {
                 for met in [false, true] {
@@ -232,47 +228,47 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_expected_requirements() {
+    fn rejects_empty_expected_criteria() {
         let error = derive_result(&BTreeMap::new(), &assessment(true, false, &[]))
-            .expect_err("an empty target requirement map is invalid");
+            .expect_err("an empty target criteria map is invalid");
 
-        assert_eq!(error, AssessmentError::EmptyExpectedRequirements);
-        assert_eq!(error.code(), "empty_expected_requirements");
-        assert_eq!(error.requirement_id(), None);
+        assert_eq!(error, AssessmentError::EmptyExpectedCriteria);
+        assert_eq!(error.code(), "empty_expected_criteria");
+        assert_eq!(error.criterion_id(), None);
     }
 
     #[test]
-    fn rejects_a_missing_requirement_id_with_a_stable_error() {
+    fn rejects_a_missing_criterion_id_with_a_stable_error() {
         let error = derive_result(
-            &requirements(&["mechanism", "tradeoff"]),
+            &criteria(&["mechanism", "tradeoff"]),
             &assessment(true, false, &[("mechanism", true)]),
         )
-        .expect_err("missing requirement must be rejected");
+        .expect_err("missing criterion must be rejected");
 
-        assert_eq!(error.code(), "missing_requirement_id");
-        assert_eq!(error.requirement_id(), Some("tradeoff"));
+        assert_eq!(error.code(), "missing_criterion_id");
+        assert_eq!(error.criterion_id(), Some("tradeoff"));
         assert_eq!(
             error.to_string(),
-            "missing_requirement_id: requirement ID `tradeoff`"
+            "missing_criterion_id: criterion ID `tradeoff`"
         );
     }
 
     #[test]
-    fn rejects_an_unknown_requirement_id_with_a_stable_error() {
+    fn rejects_an_unknown_criterion_id_with_a_stable_error() {
         let error = derive_result(
-            &requirements(&["mechanism"]),
+            &criteria(&["mechanism"]),
             &assessment(true, false, &[("unrelated", true)]),
         )
-        .expect_err("unknown requirement must be rejected");
+        .expect_err("unknown criterion must be rejected");
 
-        assert_eq!(error.code(), "unknown_requirement_id");
-        assert_eq!(error.requirement_id(), Some("unrelated"));
+        assert_eq!(error.code(), "unknown_criterion_id");
+        assert_eq!(error.criterion_id(), Some("unrelated"));
     }
 
     #[test]
-    fn requirement_map_order_does_not_change_the_result() {
-        let first_expected = requirements(&["mechanism", "tradeoff"]);
-        let second_expected = requirements(&["tradeoff", "mechanism"]);
+    fn criteria_map_order_does_not_change_the_result() {
+        let first_expected = criteria(&["mechanism", "tradeoff"]);
+        let second_expected = criteria(&["tradeoff", "mechanism"]);
         let first = derive_result(
             &first_expected,
             &assessment(true, false, &[("mechanism", true), ("tradeoff", false)]),
@@ -287,13 +283,13 @@ mod tests {
     }
 
     #[test]
-    fn adding_an_unmet_requirement_cannot_make_a_result_correct() {
+    fn adding_an_unmet_criterion_cannot_make_a_result_correct() {
         let before = derive_result(
-            &requirements(&["mechanism"]),
+            &criteria(&["mechanism"]),
             &assessment(true, false, &[("mechanism", true)]),
         );
         let after = derive_result(
-            &requirements(&["mechanism", "tradeoff"]),
+            &criteria(&["mechanism", "tradeoff"]),
             &assessment(true, false, &[("mechanism", true), ("tradeoff", false)]),
         );
 
@@ -303,24 +299,21 @@ mod tests {
 
     #[test]
     fn duplicate_keys_are_outside_the_map_api_boundary() {
-        let mut requirement_checks = BTreeMap::new();
+        let mut criteria_checks = BTreeMap::new();
+        assert_eq!(criteria_checks.insert("mechanism".to_owned(), true), None);
         assert_eq!(
-            requirement_checks.insert("mechanism".to_owned(), true),
-            None
-        );
-        assert_eq!(
-            requirement_checks.insert("mechanism".to_owned(), false),
+            criteria_checks.insert("mechanism".to_owned(), false),
             Some(true)
         );
 
-        let assessment = Assessment::new(true, false, requirement_checks);
-        assert_eq!(assessment.requirement_checks.len(), 1);
-        assert!(!assessment.requirement_checks["mechanism"]);
+        let assessment = Assessment::new(true, false, criteria_checks);
+        assert_eq!(assessment.criteria_checks.len(), 1);
+        assert!(!assessment.criteria_checks["mechanism"]);
     }
 
     #[test]
     fn policy_input_has_no_metadata_or_scheduler_fields() {
-        let expected = requirements(&["mechanism"]);
+        let expected = criteria(&["mechanism"]);
         let assessment = Assessment::new(true, false, checks(&[("mechanism", true)]));
 
         assert_eq!(

@@ -9,7 +9,7 @@
     "assessment": {
       "answer_submitted": true,
       "target_knowledge_supplied_before_answer": false,
-      "requirement_checks": {
+      "criteria_checks": {
         "leading-key": true,
         "tree-navigation": true
       }
